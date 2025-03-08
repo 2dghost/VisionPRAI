@@ -1,0 +1,63 @@
+# AI PR Reviewer Configuration
+
+# GitHub Token (Optional if using GitHub Actions with GITHUB_TOKEN)
+# github_token: "your-github-token-here"
+
+# AI Model Configuration
+model:
+  # Provider options: openai, anthropic, google, mistral, ollama, huggingface
+  provider: "openai"
+  
+  # API Key (Optional if set via environment variable: {PROVIDER}_API_KEY)
+  # api_key: "your-api-key-here"
+  
+  # API Endpoint
+  endpoint: "https://api.openai.com/v1/chat/completions"
+  
+  # Model Name
+  model: "gpt-4"
+  
+  # Maximum tokens to generate
+  max_tokens: 2000
+
+# Review Configuration
+review:
+  # Enable line-specific comments (experimental)
+  line_comments: true
+  
+  # Focus areas for the AI to consider during review
+  focus_areas: |
+    1. Code Correctness
+       - Logic errors and bugs
+       - Edge cases and error handling
+       - Off-by-one errors, null pointer exceptions
+    
+    2. Performance Issues
+       - Inefficient algorithms or data structures
+       - Unnecessary computations or memory usage
+       - Potential for memory leaks or resource exhaustion
+    
+    3. Security Vulnerabilities
+       - Input validation issues
+       - Authentication and authorization flaws
+       - XSS, SQL injection, CSRF vulnerabilities
+       - Hardcoded credentials or secrets
+    
+    4. Code Quality and Maintainability
+       - Clear naming and good documentation
+       - Adherence to coding standards and patterns
+       - Testability and test coverage
+       - Code duplication and opportunities for refactoring
+    
+    5. Architecture and Design
+       - Appropriate abstraction and separation of concerns
+       - Compliance with SOLID principles
+       - Proper error handling patterns
+
+# GitHub Action Configuration (used when running in GitHub Actions)
+github_action:
+  # Types of PR events to trigger on
+  trigger_on:
+    - opened
+    - synchronize
+    - reopened
