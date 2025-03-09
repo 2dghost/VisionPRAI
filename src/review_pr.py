@@ -188,6 +188,13 @@ def generate_prompt(diff: str, files: List[Dict[str, Any]], config: Dict[str, An
     file_filtering_enabled = config.get("review", {}).get("file_filtering", {}).get("enabled", False)
     exclude_patterns = config.get("review", {}).get("file_filtering", {}).get("exclude_patterns", [])
     
+    # Get review format settings
+    format_config = config.get("review", {}).get("format", {})
+    include_summary = format_config.get("include_summary", True)
+    include_overview = format_config.get("include_overview", True)
+    include_recommendations = format_config.get("include_recommendations", True)
+    template_style = format_config.get("template_style", "default")
+    
     # Extract relevant file info
     file_info = []
     for file in files:
@@ -221,8 +228,66 @@ def generate_prompt(diff: str, files: List[Dict[str, Any]], config: Dict[str, An
         f"Files changed in this PR:\n{json.dumps(file_info, indent=2)}\n\n"
         "PR Diff:\n"
         f"```diff\n{diff}\n```\n\n"
-        "Format your review as a markdown document with sections for each major category of feedback.\n"
-        "For specific issues, reference the file and line number when possible."
+    )
+    
+    # Add appropriate format instructions based on template style and configuration
+    if template_style == "coderabbit":
+        prompt += (
+            "Format your review as a markdown document with the following structure:\n\n"
+        )
+        
+        if include_summary:
+            prompt += (
+                "## Summary\n"
+                "Start with a concise 2-3 sentence summary of the PR's purpose and overall quality.\n\n"
+            )
+        
+        if include_overview:
+            prompt += (
+                "## Overview of Changes\n"
+                "Provide a bullet-point list of the key changes made in this PR, focusing on what was added, modified, or fixed.\n\n"
+            )
+        
+        prompt += (
+            "## Analysis\n"
+            "Organized into sections for each file with specific feedback.\n"
+            "For specific issues, reference the line number when possible.\n\n"
+        )
+        
+        if include_recommendations:
+            prompt += (
+                "## Recommendations\n"
+                "End with 2-3 key recommendations or next steps.\n"
+            )
+    else:
+        # Default template
+        prompt += (
+            "Format your review as a markdown document with the following structure:\n\n"
+        )
+        
+        if include_summary:
+            prompt += (
+                "## Summary\n"
+                "Start with a concise 2-3 sentence summary of the PR's purpose and overall quality.\n\n"
+            )
+        
+        if include_overview:
+            prompt += (
+                "## Overview of Changes\n"
+                "Provide a bullet-point list of the key changes made in this PR, focusing on what was added, modified, or fixed.\n\n"
+            )
+        
+        prompt += (
+            "## Feedback\n"
+            "Organized into sections for each major category (e.g., Code Quality, Performance, Security).\n"
+            "For specific issues, reference the file and line number when possible.\n\n"
+        )
+        
+        if include_recommendations:
+            prompt += (
+                "## Recommendations\n"
+                "End with 2-3 key recommendations or next steps."
+            )
     )
     
     return prompt

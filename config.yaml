@@ -63,6 +63,20 @@ review:
     #   * "main.cpp line 56: This might cause a memory leak"
     #   * "In file `README.md` at line 30: The documentation is unclear"
   
+  # Review format customization
+  format:
+    # Whether to include a summary section at the start of the review
+    include_summary: true
+    
+    # Whether to include an overview of changes section
+    include_overview: true
+    
+    # Whether to include recommendations section at the end
+    include_recommendations: true
+    
+    # Template style to use (options: default, coderabbit)
+    template_style: "default"
+  
   # Focus areas for the AI to consider during review
   focus_areas: |
     1. Code Correctness
