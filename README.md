@@ -1,24 +1,28 @@
 # AI PR Reviewer
 
-An open-source tool to automate code reviews on GitHub PRs using any AI model. This tool analyzes pull request diffs and provides actionable feedback to improve code quality.
+**Use any AI model for automated code reviews on GitHub PRs!** 
+
+AI PR Reviewer brings CodeRabbit-style AI code reviews to GitHub with the freedom to choose your own AI provider. Get code reviews directly in your PRs, with line-specific comments attached to the code, using the AI model of your choice (OpenAI, Anthropic Claude, Google Gemini, etc.).
+
+![AI PR Reviewer Demo](https://github.com/user-attachments/assets/9eda65d1-be94-4bf5-b41a-65a8fe87c698)
 
 ## Features
 
-- **Model Agnostic**: Connect to any AI provider (OpenAI, Anthropic, Google, Mistral, Ollama, Hugging Face)
-- **Focused Reviews**: Analyzes code for bugs, performance issues, security vulnerabilities, and more
-- **Line-Specific Comments**: Posts comments directly on the relevant lines of code (experimental)
-- **Easy Setup**: Run via GitHub Actions or locally with minimal configuration
-- **Customizable**: Configure review focus areas and model settings to match your team's needs
+- **🤖 Choose Your AI**: Works with OpenAI, Anthropic Claude, Google Gemini, Mistral, etc.
+- **💬 In-Line Code Comments**: AI feedback appears directly alongside your code (like CodeRabbit)
+- **🔒 Privacy Focused**: Your code never leaves your GitHub Actions environment
+- **⚙️ Highly Customizable**: Configure focus areas, file filters, and model behavior
+- **🚀 5-Minute Setup**: Just add the workflow file and your API key to get started
 
-## Quick Start
+## Quick Start (5-Minute Setup)
 
 ### GitHub Actions Setup
 
-1. Add this repository to your GitHub Actions workflow:
+1. **Add Workflow File**:
+   Create a file at `.github/workflows/pr-review.yml` with this content:
 
 ```yaml
-# .github/workflows/ai-review.yml
-name: AI Code Review
+name: AI PR Review
 
 on:
   pull_request:
@@ -28,38 +32,79 @@ jobs:
   review:
     runs-on: ubuntu-latest
     steps:
-      - uses: yourusername/ai-pr-reviewer@main
+      - name: Checkout code
+        uses: actions/checkout@v4
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
-          # Optional: model: "gpt-4" 
-          # Optional: focus: "security,performance"
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run AI Review
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Use one of these based on your chosen AI provider:
+          # OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          # GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          # MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+          GITHUB_EVENT_NUMBER: ${{ github.event.pull_request.number }}
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          python src/review_pr.py --verbose
 ```
 
-2. Add your API key to your repository secrets.
+2. **Setup Repository Secrets**:
+   - Go to your repository's **Settings** → **Secrets and variables** → **Actions**
+   - Add the following secrets:
+     - `GH_TOKEN`: Your GitHub token with repository access
+     - `ANTHROPIC_API_KEY` (or another provider): Your AI provider's API key
 
-### Local Setup
+3. **Copy Configuration Files**:
+   - Download the [config.yaml](config.yaml) file and place it in your repository root
+   - Optionally customize the settings (see Configuration section below)
 
-1. Clone this repository:
+That's it! Your AI PR Reviewer will run automatically on new pull requests.
+
+### Local Setup for Development
+
+1. **Clone this repository**:
    ```bash
-   git clone https://github.com/yourusername/ai-pr-reviewer.git
-   cd ai-pr-reviewer
+   git clone https://github.com/2dghost/VisionPRAI.git
+   cd VisionPRAI
    ```
 
-2. Install dependencies:
+2. **Install dependencies**:
    ```bash
    pip install -r requirements.txt
    ```
 
-3. Configure your settings in `config.yaml` or use environment variables.
-
-4. Run the reviewer:
+3. **Set environment variables**:
    ```bash
-   export GITHUB_TOKEN="your-github-token"
-   export OPENAI_API_KEY="your-openai-key"
-   export PR_REPOSITORY="owner/repo"
+   # GitHub credentials
+   export GH_TOKEN="your-github-personal-access-token"
+   
+   # Choose one provider API key:
+   export ANTHROPIC_API_KEY="your-anthropic-api-key"
+   # or
+   export OPENAI_API_KEY="your-openai-api-key"
+   
+   # PR to review:
+   export PR_REPOSITORY="username/repository"
    export PR_NUMBER="123"
-   python src/review_pr.py
+   ```
+
+4. **Run the reviewer**:
+   ```bash
+   python src/review_pr.py --verbose
    ```
 
 ## Configuration
@@ -73,19 +118,68 @@ jobs:
 - **Ollama**: Local model support
 - **Hugging Face**: Any compatible model
 
-### Config File
+### Changing AI Providers
 
-The `config.yaml` file controls the reviewer's behavior:
+To use a different AI model, modify the `config.yaml` file:
 
+1. **For OpenAI (GPT-4, GPT-3.5):**
 ```yaml
 model:
-  provider: "openai"  # openai, anthropic, google, mistral, ollama, huggingface
+  provider: "openai"
   endpoint: "https://api.openai.com/v1/chat/completions"
   model: "gpt-4"
-  max_tokens: 2000
+  max_tokens: 4000
+```
+Then add `OPENAI_API_KEY` to your GitHub secrets.
 
+2. **For Anthropic (Claude):**
+```yaml
+model:
+  provider: "anthropic"
+  endpoint: "https://api.anthropic.com/v1/messages"
+  model: "claude-3-haiku-20240307"  # Or another Claude model
+  max_tokens: 4000
+```
+Then add `ANTHROPIC_API_KEY` to your GitHub secrets.
+
+3. **For Google (Gemini):**
+```yaml
+model:
+  provider: "google"
+  endpoint: "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent"
+  model: "gemini-pro"
+  max_tokens: 4000
+```
+Then add `GOOGLE_API_KEY` to your GitHub secrets.
+
+### Full Config Example
+
+The `config.yaml` file controls all reviewer behaviors:
+
+```yaml
+# AI Model Configuration
+model:
+  provider: "anthropic"  # openai, anthropic, google, mistral, ollama, huggingface
+  endpoint: "https://api.anthropic.com/v1/messages"
+  model: "claude-3-haiku-20240307"
+  max_tokens: 4000
+
+# Review Configuration
 review:
+  # Enable line-specific comments
   line_comments: true
+  
+  # File filtering
+  file_filtering:
+    enabled: true
+    exclude_patterns:
+      - "*.md"         # Exclude markdown files
+      - "*.txt"        # Exclude text files
+      - ".gitignore"   # Exclude .gitignore
+      - "LICENSE"      # Exclude license files
+    max_file_size: 500  # KB
+  
+  # Review focus areas
   focus_areas: |
     1. Code Correctness
     2. Performance Issues
@@ -94,25 +188,74 @@ review:
     5. Architecture and Design
 ```
 
-## Environment Variables
+## Customizing Your Reviews
 
-- `GITHUB_TOKEN`: GitHub authentication token
-- `{PROVIDER}_API_KEY`: API key for the chosen AI provider (e.g., `OPENAI_API_KEY`)
-- `PR_REPOSITORY`: Repository in the format "owner/repo" (for local runs)
-- `PR_NUMBER`: Pull request number (for local runs)
+### Focusing on Specific Areas
 
+You can customize what the AI focuses on by modifying the `focus_areas` section in `config.yaml`:
 
-### PR Example
+```yaml
+focus_areas: |
+  1. Security Vulnerabilities
+     - Input validation issues
+     - Authentication and authorization flaws
+     - XSS, SQL injection, CSRF vulnerabilities
+     - Hardcoded credentials or secrets
+  
+  2. Performance Optimization
+     - Database query efficiency
+     - Memory usage concerns
+     - Algorithmic complexity issues
+```
 
-![image](https://github.com/user-attachments/assets/9eda65d1-be94-4bf5-b41a-65a8fe87c698)
+### Excluding Files from Review
 
+To exclude specific file types or directories:
 
-### Line Comment Example
+```yaml
+file_filtering:
+  enabled: true
+  exclude_patterns:
+    - "*.md"         # Exclude all markdown
+    - "tests/**"     # Exclude test files
+    - "docs/**"      # Exclude documentation
+    - "*.min.js"     # Exclude minified JS
+```
+
+## Examples
+
+### PR Overview Comment
+
+The AI provides a high-level summary of the changes:
+
+![PR Overview Comment](https://github.com/user-attachments/assets/9eda65d1-be94-4bf5-b41a-65a8fe87c698)
+
+### Line-Specific Code Comments
+
+The AI also adds detailed comments directly on specific lines of code:
 
 ```
 In file src/utils.py, line 42:
-Consider adding error handling here to prevent potential null reference exceptions.
+This operation could result in a division by zero error when count is 0.
+Consider adding a guard clause to check for this condition.
 ```
+
+```
+In file src/auth.py, line 78:
+The user input here is passed directly to SQL query without sanitization.
+This creates an SQL injection vulnerability. Use parameterized queries instead.
+```
+
+## Environment Variables
+
+- `GH_TOKEN`: GitHub authentication token for posting comments
+- `{PROVIDER}_API_KEY`: API key for your chosen AI provider:
+  - `ANTHROPIC_API_KEY` for Claude models
+  - `OPENAI_API_KEY` for GPT models
+  - `GOOGLE_API_KEY` for Gemini models
+  - etc.
+- `PR_REPOSITORY`: Repository in the format "owner/repo" (for local runs)
+- `PR_NUMBER`: Pull request number (for local runs)
 
 ## Contributing
 
