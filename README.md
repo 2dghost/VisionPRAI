@@ -8,12 +8,14 @@
 
 AI PR Reviewer brings CodeRabbit-style AI code reviews to GitHub with the freedom to choose your own AI provider. Get code reviews directly in your PRs, with line-specific comments attached to the code, using the AI model of your choice (OpenAI, Anthropic Claude, Google Gemini, etc.).
 
-![AI PR Reviewer Demo](https://github.com/user-attachments/assets/9eda65d1-be94-4bf5-b41a-65a8fe87c698)
+
+![image](https://github.com/user-attachments/assets/1c86a952-3e8d-4d7d-a188-8e50ca6e62f9)
+
 
 ## Features
 
 - **🤖 Choose Your AI**: Works with OpenAI, Anthropic Claude, Google Gemini, Mistral, etc.
-- **💬 In-Line Code Comments**: AI feedback appears directly alongside your code (like CodeRabbit)
+- **💬 In-Line Code Comments**: AI feedback appears directly alongside your code
 - **🔒 Privacy Focused**: Your code never leaves your GitHub Actions environment
 - **⚙️ Highly Customizable**: Configure focus areas, file filters, and model behavior
 - **🚀 5-Minute Setup**: Just add the workflow file and your API key to get started
@@ -228,31 +230,16 @@ file_filtering:
 
 ## Examples
 
-### PR Overview Comment
-
-The AI provides a high-level summary of the changes:
-
-![PR Overview Comment](https://github.com/user-attachments/assets/9eda65d1-be94-4bf5-b41a-65a8fe87c698)
-
 ### Line-Specific Code Comments
 
 The AI also adds detailed comments directly on specific lines of code:
 
-```
-In file src/utils.py, line 42:
-This operation could result in a division by zero error when count is 0.
-Consider adding a guard clause to check for this condition.
-```
+![image](https://github.com/user-attachments/assets/6709d4f6-86a0-497f-a5ae-8534eb4f37ca)
 
-```
-In file src/auth.py, line 78:
-The user input here is passed directly to SQL query without sanitization.
-This creates an SQL injection vulnerability. Use parameterized queries instead.
-```
 
 ## Environment Variables
 
-- `GH_TOKEN`: GitHub authentication token for posting comments
+- `GITHUB_TOKEN`: GitHub authentication token for posting comments
 - `{PROVIDER}_API_KEY`: API key for your chosen AI provider:
   - `ANTHROPIC_API_KEY` for Claude models
   - `OPENAI_API_KEY` for GPT models
@@ -268,11 +255,4 @@ We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) f
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## Acknowledgements
-
-- Inspired by [CodeRabbitAI](https://coderabbit.ai/)
-- Thanks to all AI model providers for their APIs
-
----
 
