@@ -104,6 +104,65 @@ def post_review_comment(repo: str, pr_number: str, token: str, review_text: str)
         return False
 
 
+def post_review_sections(repo: str, pr_number: str, token: str, review_text: str, 
+                         split_sections: bool = False) -> bool:
+    """
+    Post a review on a pull request, optionally splitting into separate comments for sections.
+    
+    Args:
+        repo: Repository in the format 'owner/repo'
+        pr_number: Pull request number
+        token: GitHub token
+        review_text: The review text to post
+        split_sections: Whether to split the review into separate comments by section
+        
+    Returns:
+        True if the comments were posted successfully, False otherwise
+    """
+    if not split_sections:
+        return post_review_comment(repo, pr_number, token, review_text)
+    
+    # Extract sections using markdown headers
+    section_pattern = r'^## (.+?)$(.*?)(?=^## |\Z)'
+    matches = re.finditer(section_pattern, review_text, re.MULTILINE | re.DOTALL)
+    
+    sections = []
+    overview_sections = ["Summary", "Overview of Changes", "Overview"]
+    detailed_sections = []
+    
+    for match in matches:
+        section_title = match.group(1).strip()
+        section_content = match.group(2).strip()
+        
+        if not section_content:
+            continue
+            
+        section_text = f"## {section_title}\n\n{section_content}"
+        
+        if section_title in overview_sections:
+            # Add to overview comment
+            sections.append(section_text)
+        else:
+            # Add to detailed feedback
+            detailed_sections.append(section_text)
+    
+    success = True
+    
+    # Post overview sections first
+    if sections:
+        overview_text = "\n\n".join(sections)
+        overview_success = post_review_comment(repo, pr_number, token, overview_text)
+        success = success and overview_success
+    
+    # Post detailed feedback sections
+    if detailed_sections:
+        detailed_text = "\n\n".join(detailed_sections)
+        detailed_success = post_review_comment(repo, pr_number, token, detailed_text)
+        success = success and detailed_success
+    
+    return success
+
+
 def post_line_comments(
     repo: str, 
     pr_number: str, 

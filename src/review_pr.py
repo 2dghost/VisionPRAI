@@ -26,6 +26,7 @@ try:
         get_pr_diff,
         get_pr_files,
         post_review_comment,
+        post_review_sections,
         post_line_comments,
         parse_diff_for_lines,
         extract_code_blocks
@@ -47,6 +48,7 @@ except ImportError:
         get_pr_diff,
         get_pr_files,
         post_review_comment,
+        post_review_sections,
         post_line_comments,
         parse_diff_for_lines,
         extract_code_blocks
@@ -194,6 +196,7 @@ def generate_prompt(diff: str, files: List[Dict[str, Any]], config: Dict[str, An
     include_overview = format_config.get("include_overview", True)
     include_recommendations = format_config.get("include_recommendations", True)
     template_style = format_config.get("template_style", "default")
+    split_comments = format_config.get("split_comments", False)
     
     # Extract relevant file info
     file_info = []
@@ -378,9 +381,10 @@ def review_pr(config_path: Optional[str] = None, verbose: bool = False) -> bool:
         logger.error(f"Error generating review: {str(e)}")
         return False
     
-    # Post general review comment
-    logger.info("Posting general review comment")
-    success = post_review_comment(repo, pr_number, github_token, review_text)
+    # Post general review comment, possibly splitting into sections
+    split_sections = config.get("review", {}).get("format", {}).get("split_comments", False)
+    logger.info(f"Posting review {'(split into sections)' if split_sections else ''}")
+    success = post_review_sections(repo, pr_number, github_token, review_text, split_sections)
     if not success:
         logger.error("Failed to post review comment")
         return False
