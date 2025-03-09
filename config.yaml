@@ -25,6 +25,28 @@ review:
   # Enable line-specific comments (experimental)
   line_comments: true
   
+  # Comment extraction configuration
+  comment_extraction:
+    # Regex patterns used to extract line-specific comments from AI review text
+    # Each pattern should have two capture groups:
+    # 1. The file path
+    # 2. The line number (as a digit)
+    patterns:
+      - 'In\s+([^,]+),\s+line\s+(\d+):' 
+      - '([^:\s]+):(\d+):'
+      - '([^:\s]+) line (\d+):'
+      - 'In file `([^`]+)` at line (\d+)'
+    
+    # Comment Extraction Documentation:
+    # - Patterns are matched in order (first match wins)
+    # - Each pattern must have exactly two capture groups: file path and line number
+    # - To customize patterns, provide your own list that matches your preferred comment format
+    # - Examples of valid comment formats that match default patterns:
+    #   * "In src/utils.py, line 42: This could be improved..."
+    #   * "file.js:123: Consider using a more descriptive variable name"
+    #   * "main.cpp line 56: This might cause a memory leak"
+    #   * "In file `README.md` at line 30: The documentation is unclear"
+  
   # Focus areas for the AI to consider during review
   focus_areas: |
     1. Code Correctness

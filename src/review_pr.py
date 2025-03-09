@@ -22,15 +22,21 @@ from src.utils import (
     parse_diff_for_lines,
     extract_code_blocks
 )
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+from src.comment_extractor import CommentExtractor
+from src.custom_exceptions import (
+    VisionPRAIError,
+    ConfigurationError,
+    MissingConfigurationError,
+    InvalidConfigurationError,
+    CommentExtractionError
 )
-logger = logging.getLogger("ai-pr-reviewer")
+from src.logging_config import get_logger, with_context
+
+# Get structured logger
+logger = get_logger("ai-pr-reviewer")
 
 
+@with_context
 def load_config(config_path: str = "config.yaml") -> Dict[str, Any]:
     """
     Load configuration from a YAML file.
@@ -42,30 +48,33 @@ def load_config(config_path: str = "config.yaml") -> Dict[str, Any]:
         Dictionary containing configuration
         
     Raises:
-        FileNotFoundError: If the config file does not exist
-        yaml.YAMLError: If the config file is not valid YAML
-        ValueError: If the config is empty or missing required fields
+        MissingConfigurationError: If the config file does not exist
+        InvalidConfigurationError: If the config file is not valid YAML or missing required fields
     """
     # Validate the config path
     if not os.path.exists(config_path):
-        logger.error(f"Config file not found: {config_path}")
-        raise FileNotFoundError(f"Config file not found: {config_path}")
+        logger.error(f"Config file not found: {config_path}", 
+                    context={"config_path": config_path})
+        raise MissingConfigurationError("config_file")
     
     try:
         with open(config_path, "r") as f:
             config = yaml.safe_load(f) or {}
     except yaml.YAMLError as e:
-        logger.error(f"Failed to parse YAML in config file: {e}")
-        raise
+        logger.error(f"Failed to parse YAML in config file: {e}",
+                    context={"config_path": config_path, "error": str(e)})
+        raise InvalidConfigurationError("config_file", f"Invalid YAML format: {e}")
     
     # Validate minimum required configuration
     if not config:
-        logger.error("Config file is empty or not valid YAML")
-        raise ValueError("Config file is empty or not valid YAML")
+        logger.error("Config file is empty or not valid YAML",
+                    context={"config_path": config_path})
+        raise InvalidConfigurationError("config_file", "Empty or invalid YAML")
         
     if "model" not in config:
-        logger.error("Missing required 'model' section in config")
-        raise ValueError("Missing required 'model' section in config")
+        logger.error("Missing required 'model' section in config",
+                    context={"config_path": config_path})
+        raise MissingConfigurationError("model")
     
     # Check for required model configuration
     model_config = config.get("model", {})
@@ -73,40 +82,58 @@ def load_config(config_path: str = "config.yaml") -> Dict[str, Any]:
     missing_fields = [field for field in required_fields if field not in model_config]
     
     if missing_fields:
-        logger.error(f"Missing required fields in model config: {', '.join(missing_fields)}")
-        raise ValueError(f"Missing required fields in model config: {', '.join(missing_fields)}")
-        
+        missing_fields_str = ", ".join(missing_fields)
+        logger.error(f"Missing required fields in model config: {missing_fields_str}",
+                    context={"config_path": config_path, "missing_fields": missing_fields})
+        raise MissingConfigurationError(f"model.{missing_fields[0]}" if missing_fields else "model")
+    
+    logger.debug("Successfully loaded configuration", 
+                context={"config_path": config_path, "provider": model_config.get("provider")})
     return config
 
 
+@with_context
 def get_environment_variables() -> Tuple[str, str, str]:
     """
     Get required environment variables.
     
     Returns:
         Tuple of (github_token, repo, pr_number)
+        
+    Raises:
+        MissingConfigurationError: If required environment variables are missing
     """
     # Get GitHub token from environment or config
     github_token = os.environ.get("GITHUB_TOKEN")
     if not github_token:
         logger.error("GITHUB_TOKEN environment variable is required")
-        sys.exit(1)
+        raise MissingConfigurationError("GITHUB_TOKEN")
         
     # Get repository and PR number
     if "GITHUB_REPOSITORY" in os.environ and "GITHUB_EVENT_NUMBER" in os.environ:
         # Running in GitHub Actions
         repo = os.environ["GITHUB_REPOSITORY"]
         pr_number = os.environ["GITHUB_EVENT_NUMBER"]
+        logger.debug("Running in GitHub Actions environment", 
+                    context={"repo": repo, "pr_number": pr_number})
     else:
         # Running locally
         repo = os.environ.get("PR_REPOSITORY")
         pr_number = os.environ.get("PR_NUMBER")
         
         if not repo or not pr_number:
-            logger.error(
-                "When running locally, PR_REPOSITORY and PR_NUMBER environment variables are required"
-            )
-            sys.exit(1)
+            missing_vars = []
+            if not repo:
+                missing_vars.append("PR_REPOSITORY")
+            if not pr_number:
+                missing_vars.append("PR_NUMBER")
+                
+            error_msg = "When running locally, PR_REPOSITORY and PR_NUMBER environment variables are required"
+            logger.error(error_msg, context={"missing_variables": missing_vars})
+            raise MissingConfigurationError(missing_vars[0] if missing_vars else "PR_REPOSITORY")
+        
+        logger.debug("Running in local environment", 
+                    context={"repo": repo, "pr_number": pr_number})
             
     return github_token, repo, pr_number
 
@@ -154,58 +181,9 @@ def generate_prompt(diff: str, files: List[Dict[str, Any]], config: Dict[str, An
     return prompt
 
 
-def extract_line_comments(review_text: str, file_line_map: Dict[str, List[Tuple[int, str]]]) -> List[Dict[str, Any]]:
-    """
-    Extract line-specific comments from the review text.
-    
-    Args:
-        review_text: The review text from the AI
-        file_line_map: Mapping of files to line numbers from the diff
-        
-    Returns:
-        List of line comments in the format expected by GitHub API
-    """
-    comments = []
-    
-    # Look for patterns like "In file.py, line 42:" or "file.py:42:"
-    patterns = [
-        r'In\s+([^,]+),\s+line\s+(\d+):', 
-        r'([^:\s]+):(\d+):',
-        r'([^:\s]+) line (\d+):',
-        r'In file `([^`]+)` at line (\d+)'
-    ]
-    
-    for pattern in patterns:
-        matches = re.finditer(pattern, review_text, re.MULTILINE)
-        for match in matches:
-            file_path = match.group(1).strip()
-            line_num = int(match.group(2))
-            
-            # Find the end of the comment (next line-specific comment or end of text)
-            start_pos = match.end()
-            next_match = re.search('|'.join(patterns), review_text[start_pos:], re.MULTILINE)
-            if next_match:
-                end_pos = start_pos + next_match.start()
-                comment_text = review_text[start_pos:end_pos].strip()
-            else:
-                comment_text = review_text[start_pos:].strip()
-            
-            # Clean up the comment text by removing leading colons
-            comment_text = re.sub(r'^:\s*', '', comment_text)
-                
-            # Verify file exists in the diff and line number is valid
-            if file_path in file_line_map:
-                valid_lines = [line for line, _ in file_line_map[file_path]]
-                if line_num in valid_lines:
-                    comments.append({
-                        "path": file_path,
-                        "line": line_num,
-                        "body": comment_text
-                    })
-    
-    return comments
 
 
+@with_context
 def review_pr(config_path: Optional[str] = None, verbose: bool = False) -> bool:
     """
     Main function to review a pull request.
@@ -218,12 +196,14 @@ def review_pr(config_path: Optional[str] = None, verbose: bool = False) -> bool:
         True if the review was completed successfully, False otherwise
     """
     if verbose:
-        logging.getLogger().setLevel(logging.DEBUG)
+        # Update log level in the structured logger
+        os.environ["LOG_LEVEL"] = "DEBUG"
     
     try:
         # Load config
         config_file = config_path or "config.yaml"
-        logger.info(f"Loading configuration from {config_file}")
+        logger.info(f"Loading configuration from {config_file}", 
+                   context={"config_path": config_file})
         config = load_config(config_file)
         
         # Get environment variables
@@ -231,14 +211,20 @@ def review_pr(config_path: Optional[str] = None, verbose: bool = False) -> bool:
         github_token, repo, pr_number = get_environment_variables()
         
         # Initialize model adapter
-        logger.info(f"Initializing {config['model']['provider']} model adapter")
+        provider = config['model']['provider']
+        model_name = config['model']['model']
+        logger.info(f"Initializing AI model adapter", 
+                   context={"provider": provider, "model": model_name})
         model_config = config.get("model", {})
         model_adapter = ModelAdapter(model_config)
-    except (FileNotFoundError, yaml.YAMLError, ValueError) as e:
-        logger.error(f"Configuration error: {e}")
+    except VisionPRAIError as e:
+        logger.error(f"Configuration error: {e.message}",
+                   context={"error_code": e.error_code})
         return False
     except Exception as e:
-        logger.error(f"Initialization error: {str(e)}")
+        logger.error(f"Initialization error: {str(e)}",
+                    context={"error_type": type(e).__name__},
+                    exc_info=True)
         return False
     
     # Fetch PR diff
@@ -277,24 +263,37 @@ def review_pr(config_path: Optional[str] = None, verbose: bool = False) -> bool:
     line_comments_enabled = config.get("review", {}).get("line_comments", True)
     if line_comments_enabled:
         try:
-            logger.info("Processing line-specific comments")
+            logger.info("Processing line-specific comments", 
+                       context={"repo": repo, "pr_number": pr_number})
+            
             # Parse the diff to get file/line mapping
             file_line_map = parse_diff_for_lines(diff)
             
-            # Extract line-specific comments
-            line_comments = extract_line_comments(review_text, file_line_map)
+            # Extract line-specific comments using the CommentExtractor
+            comment_extractor = CommentExtractor(config_path=config_path or "config.yaml")
+            line_comments = comment_extractor.extract_line_comments(review_text, file_line_map)
             
             # Post line comments if any were found
             if line_comments:
-                logger.info(f"Posting {len(line_comments)} line-specific comments")
+                logger.info(f"Posting {len(line_comments)} line-specific comments",
+                           context={"comments_count": len(line_comments)})
                 line_comment_success = post_line_comments(repo, pr_number, github_token, line_comments)
                 if not line_comment_success:
-                    logger.error("Failed to post line comments")
+                    logger.error("Failed to post line comments",
+                                context={"repo": repo, "pr_number": pr_number})
                     # Continue despite failure to post line comments
             else:
-                logger.info("No line-specific comments found in the review")
+                logger.info("No line-specific comments found in the review",
+                           context={"repo": repo, "pr_number": pr_number})
+        except CommentExtractionError as e:
+            logger.error(f"Error extracting line comments: {str(e)}",
+                        context={"error_code": e.error_code, "repo": repo, "pr_number": pr_number},
+                        exc_info=True)
+            # Continue despite errors in line comments
         except Exception as e:
-            logger.error(f"Error processing line comments: {str(e)}")
+            logger.error(f"Error processing line comments: {str(e)}",
+                        context={"repo": repo, "pr_number": pr_number},
+                        exc_info=True)
             # Continue despite errors in line comments
     
     logger.info("PR review completed successfully")
