@@ -101,6 +101,7 @@ class ModelAdapter:
             "anthropic-version": "2023-06-01"
         }
         
+        # Updated payload format for Anthropic Claude API
         payload = {
             "model": self.model,
             "max_tokens": self.max_tokens,
@@ -110,8 +111,15 @@ class ModelAdapter:
         response = requests.post(self.endpoint, json=payload, headers=headers)
         if response.status_code != 200:
             raise RuntimeError(f"Anthropic API error: {response.text}")
-            
-        return response.json()["content"][0]["text"]
+        
+        # Handle both old and new API response formats
+        response_json = response.json()
+        if "content" in response_json and isinstance(response_json["content"], list):
+            return response_json["content"][0]["text"]
+        elif "content" in response_json and isinstance(response_json["content"], list) and "value" in response_json["content"][0]:
+            return response_json["content"][0]["value"]
+        else:
+            raise RuntimeError(f"Unexpected Anthropic API response format: {response_json}")
 
     def _call_google(self, prompt: str) -> str:
         """Call Google Gemini API."""

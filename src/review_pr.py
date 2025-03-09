@@ -9,11 +9,12 @@ import sys
 import argparse
 import json
 import logging
+import re
 import yaml
 from typing import Dict, List, Optional, Any, Tuple
 
-from model_adapters import ModelAdapter
-from utils import (
+from src.model_adapters import ModelAdapter
+from src.utils import (
     get_pr_diff,
     get_pr_files,
     post_review_comment,
@@ -39,14 +40,43 @@ def load_config(config_path: str = "config.yaml") -> Dict[str, Any]:
         
     Returns:
         Dictionary containing configuration
+        
+    Raises:
+        FileNotFoundError: If the config file does not exist
+        yaml.YAMLError: If the config file is not valid YAML
+        ValueError: If the config is empty or missing required fields
     """
+    # Validate the config path
+    if not os.path.exists(config_path):
+        logger.error(f"Config file not found: {config_path}")
+        raise FileNotFoundError(f"Config file not found: {config_path}")
+    
     try:
         with open(config_path, "r") as f:
-            config = yaml.safe_load(f)
-        return config
-    except (IOError, yaml.YAMLError) as e:
-        logger.error(f"Failed to load config: {e}")
-        sys.exit(1)
+            config = yaml.safe_load(f) or {}
+    except yaml.YAMLError as e:
+        logger.error(f"Failed to parse YAML in config file: {e}")
+        raise
+    
+    # Validate minimum required configuration
+    if not config:
+        logger.error("Config file is empty or not valid YAML")
+        raise ValueError("Config file is empty or not valid YAML")
+        
+    if "model" not in config:
+        logger.error("Missing required 'model' section in config")
+        raise ValueError("Missing required 'model' section in config")
+    
+    # Check for required model configuration
+    model_config = config.get("model", {})
+    required_fields = ["provider", "endpoint", "model"]
+    missing_fields = [field for field in required_fields if field not in model_config]
+    
+    if missing_fields:
+        logger.error(f"Missing required fields in model config: {', '.join(missing_fields)}")
+        raise ValueError(f"Missing required fields in model config: {', '.join(missing_fields)}")
+        
+    return config
 
 
 def get_environment_variables() -> Tuple[str, str, str]:
@@ -159,6 +189,9 @@ def extract_line_comments(review_text: str, file_line_map: Dict[str, List[Tuple[
                 comment_text = review_text[start_pos:end_pos].strip()
             else:
                 comment_text = review_text[start_pos:].strip()
+            
+            # Clean up the comment text by removing leading colons
+            comment_text = re.sub(r'^:\s*', '', comment_text)
                 
             # Verify file exists in the diff and line number is valid
             if file_path in file_line_map:
@@ -173,57 +206,78 @@ def extract_line_comments(review_text: str, file_line_map: Dict[str, List[Tuple[
     return comments
 
 
-def review_pr(config_path: Optional[str] = None, verbose: bool = False) -> None:
+def review_pr(config_path: Optional[str] = None, verbose: bool = False) -> bool:
     """
     Main function to review a pull request.
     
     Args:
         config_path: Path to the config file (default: "config.yaml")
         verbose: Enable verbose logging
+        
+    Returns:
+        True if the review was completed successfully, False otherwise
     """
     if verbose:
         logging.getLogger().setLevel(logging.DEBUG)
     
-    # Load config
-    config = load_config(config_path or "config.yaml")
-    
-    # Get environment variables
-    github_token, repo, pr_number = get_environment_variables()
-    
-    # Initialize model adapter
-    model_config = config.get("model", {})
-    model_adapter = ModelAdapter(model_config)
+    try:
+        # Load config
+        config_file = config_path or "config.yaml"
+        logger.info(f"Loading configuration from {config_file}")
+        config = load_config(config_file)
+        
+        # Get environment variables
+        logger.info("Retrieving environment variables")
+        github_token, repo, pr_number = get_environment_variables()
+        
+        # Initialize model adapter
+        logger.info(f"Initializing {config['model']['provider']} model adapter")
+        model_config = config.get("model", {})
+        model_adapter = ModelAdapter(model_config)
+    except (FileNotFoundError, yaml.YAMLError, ValueError) as e:
+        logger.error(f"Configuration error: {e}")
+        return False
+    except Exception as e:
+        logger.error(f"Initialization error: {str(e)}")
+        return False
     
     # Fetch PR diff
+    logger.info(f"Fetching diff for PR #{pr_number} in {repo}")
     diff = get_pr_diff(repo, pr_number, github_token)
     if not diff:
         logger.error("No diff found. Exiting.")
-        return
+        return False
     
     # Fetch PR files
+    logger.info(f"Fetching files for PR #{pr_number} in {repo}")
     files = get_pr_files(repo, pr_number, github_token)
     if not files:
         logger.warning("No files found. Continuing with diff only.")
     
     # Generate prompt
+    logger.info("Generating prompt for AI review")
     prompt = generate_prompt(diff, files, config)
     
     # Call AI for review
     try:
-        logger.info("Sending PR to AI model for review")
+        logger.info(f"Sending PR to {model_config['provider']} {model_config['model']} for review")
         review_text = model_adapter.generate_response(prompt)
     except Exception as e:
-        logger.error(f"Error generating review: {e}")
-        return
+        logger.error(f"Error generating review: {str(e)}")
+        return False
     
     # Post general review comment
+    logger.info("Posting general review comment")
     success = post_review_comment(repo, pr_number, github_token, review_text)
     if not success:
         logger.error("Failed to post review comment")
+        return False
     
     # Check if we should post line-specific comments
-    if config.get("review", {}).get("line_comments", True):
+    line_comments_enabled = config.get("review", {}).get("line_comments", True)
+    if line_comments_enabled:
         try:
+            logger.info("Processing line-specific comments")
             # Parse the diff to get file/line mapping
             file_line_map = parse_diff_for_lines(diff)
             
@@ -236,10 +290,15 @@ def review_pr(config_path: Optional[str] = None, verbose: bool = False) -> None:
                 line_comment_success = post_line_comments(repo, pr_number, github_token, line_comments)
                 if not line_comment_success:
                     logger.error("Failed to post line comments")
+                    # Continue despite failure to post line comments
+            else:
+                logger.info("No line-specific comments found in the review")
         except Exception as e:
-            logger.error(f"Error processing line comments: {e}")
+            logger.error(f"Error processing line comments: {str(e)}")
+            # Continue despite errors in line comments
     
     logger.info("PR review completed successfully")
+    return True
 
 
 def main():
@@ -249,7 +308,8 @@ def main():
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose logging")
     args = parser.parse_args()
     
-    review_pr(config_path=args.config, verbose=args.verbose)
+    success = review_pr(config_path=args.config, verbose=args.verbose)
+    sys.exit(0 if success else 1)
 
 
 if __name__ == "__main__":
