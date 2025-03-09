@@ -3,8 +3,8 @@
 **Use any AI model for automated code reviews on GitHub PRs!** 
 
 AI PR Reviewer brings CodeRabbit-style AI code reviews to GitHub with the freedom to choose your own AI provider. Get code reviews directly in your PRs, with line-specific comments attached to the code, using the AI model of your choice (OpenAI, Anthropic Claude, Google Gemini, etc.).
+![image](https://github.com/user-attachments/assets/1c86a952-3e8d-4d7d-a188-8e50ca6e62f9)
 
-![image](https://github.com/user-attachments/assets/f2793199-b8e2-4936-88b4-ee210d30464d)
 
 
 ## Features
