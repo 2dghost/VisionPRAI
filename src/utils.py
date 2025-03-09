@@ -124,6 +124,13 @@ def post_review_sections(repo: str, pr_number: str, token: str, review_text: str
     if not split_sections:
         return post_review_comment(repo, pr_number, token, review_text)
     
+    # Use a single comment approach - much simpler and more reliable
+    if True:  # Make this the default behavior
+        # Post a standard review comment with all content
+        return post_review_comment(repo, pr_number, token, review_text)
+    
+    # The following multi-comment approach is currently disabled but kept for reference
+    
     # Extract sections using markdown headers
     section_pattern = r'^## (.+?)$(.*?)(?=^## |\Z)'
     matches = list(re.finditer(section_pattern, review_text, re.MULTILINE | re.DOTALL))

@@ -233,70 +233,40 @@ def generate_prompt(diff: str, files: List[Dict[str, Any]], config: Dict[str, An
         f"```diff\n{diff}\n```\n\n"
     )
     
-    # Add appropriate format instructions based on template style and configuration
-    if template_style == "coderabbit" or split_comments:
+    # Always use the file-oriented format regardless of template style
+    prompt += (
+        "Format your review as a markdown document with the following structure:\n\n"
+    )
+    
+    if include_summary:
         prompt += (
-            "Format your review as a markdown document with the following structure:\n\n"
+            "## Summary\n"
+            "Start with a concise 2-3 sentence summary of the PR's purpose and overall quality.\n\n"
         )
-        
-        if include_summary:
-            prompt += (
-                "## Summary\n"
-                "Start with a concise 2-3 sentence summary of the PR's purpose and overall quality.\n\n"
-            )
-        
-        if include_overview:
-            prompt += (
-                "## Overview of Changes\n"
-                "Provide a bullet-point list of the key changes made in this PR, focusing on what was added, modified, or fixed.\n\n"
-            )
-        
-        # Prompt for file-based organization
+    
+    if include_overview:
         prompt += (
-            "## File-specific feedback\n"
-            "IMPORTANT: Organize your feedback as separate sections for each file, using the following format:\n\n"
-            "## filename.ext\n"
-            "Detailed feedback specific to this file.\n\n"
-            "## another_file.ext\n"
-            "Detailed feedback specific to this file.\n\n"
-            "For each file section, include specific issues referencing line numbers when possible.\n"
-            "Each filename should be a section header starting with '## ' followed by the exact filename.\n\n"
+            "## Overview of Changes\n"
+            "Provide a bullet-point list of the key changes made in this PR, focusing on what was added, modified, or fixed.\n\n"
         )
-        
-        if include_recommendations:
-            prompt += (
-                "## Recommendations\n"
-                "End with 2-3 key recommendations or next steps.\n"
-            )
-    else:
-        # Default template
+    
+    # Prompt for file-based organization
+    prompt += (
+        "## File-specific feedback\n"
+        "IMPORTANT: Organize your feedback as separate sections for each file, using the following format:\n\n"
+        "## filename.ext\n"
+        "Detailed feedback specific to this file.\n\n"
+        "## another_file.ext\n"
+        "Detailed feedback specific to this file.\n\n"
+        "For each file section, include specific issues referencing line numbers when possible.\n"
+        "Each filename should be a section header starting with '## ' followed by the exact filename.\n\n"
+    )
+    
+    if include_recommendations:
         prompt += (
-            "Format your review as a markdown document with the following structure:\n\n"
+            "## Recommendations\n"
+            "End with 2-3 key recommendations or next steps.\n"
         )
-        
-        if include_summary:
-            prompt += (
-                "## Summary\n"
-                "Start with a concise 2-3 sentence summary of the PR's purpose and overall quality.\n\n"
-            )
-        
-        if include_overview:
-            prompt += (
-                "## Overview of Changes\n"
-                "Provide a bullet-point list of the key changes made in this PR, focusing on what was added, modified, or fixed.\n\n"
-            )
-        
-        prompt += (
-            "## Feedback\n"
-            "Organized into sections for each major category (e.g., Code Quality, Performance, Security).\n"
-            "For specific issues, reference the file and line number when possible.\n\n"
-        )
-        
-        if include_recommendations:
-            prompt += (
-                "## Recommendations\n"
-                "End with 2-3 key recommendations or next steps."
-            )
     
     return prompt
 

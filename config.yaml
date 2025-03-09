@@ -78,7 +78,7 @@ review:
     template_style: "default"
     
     # Whether to split the review into separate comments (overview + detailed feedback)
-    split_comments: true
+    split_comments: false
   
   # Focus areas for the AI to consider during review
   focus_areas: |
