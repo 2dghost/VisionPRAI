@@ -51,7 +51,6 @@ class StructuredLogRecord(logging.LogRecord):
     
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.context = getattr(self, "context", {})
         self.timestamp = datetime.utcnow().isoformat() + "Z"
         
         # Add trace info if exception
@@ -82,9 +81,12 @@ class JsonFormatter(logging.Formatter):
             "process": record.process
         }
         
-        # Add context if available
-        if hasattr(record, "context") and record.context:
+        # Add context from extra if available
+        if hasattr(record, "context"):
             context = self._redact_sensitive_info(record.context)
+            log_obj["context"] = context
+        elif hasattr(record, "extra") and record.__dict__.get("context"):
+            context = self._redact_sensitive_info(record.__dict__.get("context", {}))
             log_obj["context"] = context
         
         # Add traceback if available
@@ -120,9 +122,16 @@ class HumanReadableFormatter(logging.Formatter):
         record = cast(StructuredLogRecord, record)
         log_str = super().format(record)
         
+        # Get context from extra if available
+        context = None
+        if hasattr(record, "context"):
+            context = record.context
+        elif hasattr(record, "extra") and record.__dict__.get("context"):
+            context = record.__dict__.get("context", {})
+            
         # Add context as a formatted string if available
-        if hasattr(record, "context") and record.context:
-            context = self._redact_sensitive_info(record.context)
+        if context:
+            context = self._redact_sensitive_info(context)
             context_str = "\n".join(f"    {k}: {v}" for k, v in context.items())
             log_str += f"\n  Context:\n{context_str}"
         
@@ -152,13 +161,19 @@ class ContextAdapter(logging.LoggerAdapter):
     
     def process(self, msg: str, kwargs: Dict[str, Any]) -> tuple:
         """Process the log message to add context."""
-        if "context" not in kwargs:
-            kwargs["context"] = {}
-        elif not isinstance(kwargs["context"], dict):
-            kwargs["context"] = {"value": kwargs["context"]}
+        # Extract context from kwargs if present
+        context = kwargs.pop("context", {}) if kwargs else {}
+        if not isinstance(context, dict):
+            context = {"value": context}
         
+        # Merge with adapter's extra context
         if self.extra:
-            kwargs["context"].update(self.extra)
+            context.update(self.extra)
+        
+        # Store context in extra dict to be processed by formatter
+        extra = kwargs.get("extra", {})
+        extra["context"] = context
+        kwargs["extra"] = extra
         
         return msg, kwargs
 
