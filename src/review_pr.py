@@ -250,16 +250,21 @@ def generate_prompt(diff: str, files: List[Dict[str, Any]], config: Dict[str, An
             "Provide a bullet-point list of the key changes made in this PR, focusing on what was added, modified, or fixed.\n\n"
         )
     
-    # Prompt for file-based organization
+    # Prompt for file-based organization + line-specific comments
     prompt += (
         "## File-specific feedback\n"
-        "IMPORTANT: Organize your feedback as separate sections for each file, using the following format:\n\n"
+        "IMPORTANT: Organize your feedback in two ways to ensure proper code review formatting:\n\n"
+        "1. FIRST, provide detailed file-level feedback using this format:\n"
         "## filename.ext\n"
-        "Detailed feedback specific to this file.\n\n"
+        "Overall feedback about this file, design patterns, structure, etc.\n\n"
         "## another_file.ext\n"
-        "Detailed feedback specific to this file.\n\n"
-        "For each file section, include specific issues referencing line numbers when possible.\n"
-        "Each filename should be a section header starting with '## ' followed by the exact filename.\n\n"
+        "Overall feedback about this file.\n\n"
+        "2. SECOND, provide line-specific comments using one of these formats:\n"
+        "- In filename.ext, line 42: This code could be improved by...\n"
+        "- filename.ext:25: Consider using a more descriptive variable name\n"
+        "- In file `config.yaml` at line 10: The configuration is missing...\n\n"
+        "It is CRITICAL to use both approaches. Make sure the line numbers you reference actually exist in the changed files.\n"
+        "The line-specific comments will be displayed directly alongside the code in GitHub.\n\n"
     )
     
     if include_recommendations:
@@ -356,13 +361,29 @@ def review_pr(config_path: Optional[str] = None, verbose: bool = False) -> bool:
         logger.error(f"Error generating review: {str(e)}")
         return False
     
-    # Post general review comment, possibly splitting into sections
-    split_sections = config.get("review", {}).get("format", {}).get("split_comments", False)
-    logger.info(f"Posting review {'(split into sections)' if split_sections else ''}")
-    success = post_review_sections(repo, pr_number, github_token, review_text, split_sections)
-    if not success:
-        logger.error("Failed to post review comment")
-        return False
+    # Post summary overview as general comment
+    logger.info("Posting overview comment")
+    
+    # Extract just summary and overview sections
+    summary_pattern = r'(?:^|\n)## Summary\s*\n(.*?)(?=\n##|\Z)'
+    overview_pattern = r'(?:^|\n)## Overview of Changes\s*\n(.*?)(?=\n##|\Z)'
+    
+    summary_match = re.search(summary_pattern, review_text, re.DOTALL)
+    overview_match = re.search(overview_pattern, review_text, re.DOTALL)
+    
+    overview_text = "# AI Review Summary\n\n"
+    if summary_match:
+        overview_text += f"## Summary\n{summary_match.group(1).strip()}\n\n"
+    if overview_match:
+        overview_text += f"## Overview of Changes\n{overview_match.group(1).strip()}\n\n"
+    
+    # Add a note about code-specific comments
+    overview_text += "\n\n> Detailed feedback has been added as review comments on specific code lines."
+    
+    overview_success = post_review_comment(repo, pr_number, github_token, overview_text)
+    if not overview_success:
+        logger.error("Failed to post overview comment")
+        # Continue anyway to post line comments
     
     # Check if we should post line-specific comments
     line_comments_enabled = config.get("review", {}).get("line_comments", True)
@@ -374,15 +395,47 @@ def review_pr(config_path: Optional[str] = None, verbose: bool = False) -> bool:
             # Parse the diff to get file/line mapping
             file_line_map = parse_diff_for_lines(diff)
             
-            # Extract line-specific comments using the CommentExtractor
+            # First use the standard extractor for explicitly marked line comments
             comment_extractor = CommentExtractor(config_path=config_path or "config.yaml")
-            line_comments = comment_extractor.extract_line_comments(review_text, file_line_map)
+            standard_line_comments = comment_extractor.extract_line_comments(review_text, file_line_map)
+            
+            # Now extract file-specific sections and convert them to line comments for each file
+            file_sections = {}
+            file_section_pattern = r'(?:^|\n)## ([^\n:]+\.[^\n:]+)\s*\n(.*?)(?=\n## [^\n:]+\.[^\n:]|\Z)'
+            
+            for match in re.finditer(file_section_pattern, review_text, re.DOTALL):
+                filename = match.group(1).strip()
+                content = match.group(2).strip()
+                
+                if filename in file_line_map:
+                    file_sections[filename] = content
+            
+            # Convert file sections to line comments 
+            additional_comments = []
+            
+            for filename, content in file_sections.items():
+                # Get the line numbers for this file from the diff
+                if not file_line_map.get(filename):
+                    continue
+                    
+                # Get the first changed line in the file
+                first_line = file_line_map[filename][0][0] if file_line_map[filename] else 1
+                
+                # Create a comment for the file
+                additional_comments.append({
+                    "path": filename,
+                    "line": first_line,
+                    "body": f"## File Review\n\n{content}"
+                })
+            
+            # Combine standard and file-section comments
+            all_comments = standard_line_comments + additional_comments
             
             # Post line comments if any were found
-            if line_comments:
-                logger.info(f"Posting {len(line_comments)} line-specific comments",
-                           context={"comments_count": len(line_comments)})
-                line_comment_success = post_line_comments(repo, pr_number, github_token, line_comments)
+            if all_comments:
+                logger.info(f"Posting {len(all_comments)} line-specific comments",
+                           context={"comments_count": len(all_comments)})
+                line_comment_success = post_line_comments(repo, pr_number, github_token, all_comments)
                 if not line_comment_success:
                     logger.error("Failed to post line comments",
                                 context={"repo": repo, "pr_number": pr_number})
