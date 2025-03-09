@@ -21,7 +21,9 @@ class ModelAdapter:
                    (provider, api_key, endpoint, model, etc.)
         """
         self.provider = config["provider"].lower()
-        self.api_key = config.get("api_key") or os.environ.get(f"{self.provider.upper()}_API_KEY")
+        api_key = config.get("api_key") or os.environ.get(f"{self.provider.upper()}_API_KEY")
+        # Ensure API key is trimmed of any whitespace
+        self.api_key = api_key.strip() if api_key else None
         self.endpoint = config["endpoint"]
         self.model = config["model"]
         self.max_tokens = config.get("max_tokens", 1500)
