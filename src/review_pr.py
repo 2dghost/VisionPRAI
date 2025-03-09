@@ -297,7 +297,6 @@ def generate_prompt(diff: str, files: List[Dict[str, Any]], config: Dict[str, An
                 "## Recommendations\n"
                 "End with 2-3 key recommendations or next steps."
             )
-    )
     
     return prompt
 
