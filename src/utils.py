@@ -95,7 +95,7 @@ def post_review_comment(repo: str, pr_number: str, token: str, review_text: str)
     data = {"body": review_text, "event": "COMMENT"}
     
     try:
-        logger.info(f"Posting review comment for PR #{pr_number} in {repo}")
+        # Don't log here, as this will be called from post_with_retry which already logs
         response = requests.post(url, headers=headers, json=data)
         response.raise_for_status()
         return response.status_code == 201
@@ -195,22 +195,16 @@ def post_review_sections(repo: str, pr_number: str, token: str, review_text: str
     
     # Function to post with rate limit handling
     def post_with_retry(content, description):
-        retries = 3
-        for i in range(retries):
-            try:
-                success = post_review_comment(repo, pr_number, token, content)
-                if success:
-                    # Add a small delay to avoid rate limits
-                    time.sleep(0.5)
-                    return True
-                elif i < retries - 1:
-                    # Wait longer before retrying
-                    time.sleep(2)
-            except Exception as e:
-                logger.error(f"Error posting {description} (attempt {i+1}/{retries}): {e}")
-                if i < retries - 1:
-                    time.sleep(2)
-        return False
+        # Only try once, don't retry automatically
+        try:
+            logger.info(f"Posting {description}")
+            success = post_review_comment(repo, pr_number, token, content)
+            # Add a small delay to avoid rate limits
+            time.sleep(1)
+            return success
+        except Exception as e:
+            logger.error(f"Error posting {description}: {e}")
+            return False
     
     # Limit the number of comments to post to avoid rate limits
     max_comments = 8  # GitHub has rate limits

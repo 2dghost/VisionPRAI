@@ -237,9 +237,12 @@ def setup_logging(module_name: str = "vision-prai",
     level = getattr(logging, log_level, logging.INFO)
     logger.setLevel(level)
     
-    # Remove existing handlers
-    for handler in logger.handlers[:]:
-        logger.removeHandler(handler)
+    # If logger already has handlers, assume it's configured
+    if logger.handlers:
+        return logger
+    
+    # Set propagate to False to prevent duplicate logs
+    logger.propagate = False
     
     # Set up console handler
     console_handler = logging.StreamHandler(sys.stdout)
