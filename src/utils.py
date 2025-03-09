@@ -124,12 +124,13 @@ def post_review_sections(repo: str, pr_number: str, token: str, review_text: str
     
     # Extract sections using markdown headers
     section_pattern = r'^## (.+?)$(.*?)(?=^## |\Z)'
-    matches = re.finditer(section_pattern, review_text, re.MULTILINE | re.DOTALL)
+    matches = list(re.finditer(section_pattern, review_text, re.MULTILINE | re.DOTALL))
     
-    sections = []
-    overview_sections = ["Summary", "Overview of Changes", "Overview"]
-    detailed_sections = []
+    overview_sections = []
+    file_sections = {}
+    recommendation_section = None
     
+    # First pass: categorize sections
     for match in matches:
         section_title = match.group(1).strip()
         section_content = match.group(2).strip()
@@ -139,26 +140,76 @@ def post_review_sections(repo: str, pr_number: str, token: str, review_text: str
             
         section_text = f"## {section_title}\n\n{section_content}"
         
-        if section_title in overview_sections:
-            # Add to overview comment
-            sections.append(section_text)
+        # Identify overview sections
+        if section_title in ["Summary", "Overview of Changes", "Overview"]:
+            overview_sections.append(section_text)
+        # Identify recommendations section
+        elif section_title in ["Recommendations", "Next Steps"]:
+            recommendation_section = section_text
+        # Check if it's a file-specific section (contains filename)
+        elif ":" in section_title or "/" in section_title or "." in section_title:
+            # Extract the filename from the section title
+            filename = section_title.split(":")[0].strip() if ":" in section_title else section_title.strip()
+            
+            # Clean up common prefixes like "File: " or "Analysis: "
+            prefixes_to_remove = ["File", "Analysis", "Review", "Feedback"]
+            for prefix in prefixes_to_remove:
+                if filename.startswith(f"{prefix}:"):
+                    filename = filename[len(prefix)+1:].strip()
+            
+            if filename not in file_sections:
+                file_sections[filename] = []
+            
+            file_sections[filename].append(section_text)
+        # Other sections go with their closest file
         else:
-            # Add to detailed feedback
-            detailed_sections.append(section_text)
+            # Add to the last file section if any exist
+            if file_sections:
+                last_file = list(file_sections.keys())[-1]
+                file_sections[last_file].append(section_text)
+            # Otherwise add to overview
+            else:
+                overview_sections.append(section_text)
+    
+    # Look for file mentions within sections
+    file_mention_pattern = r'([a-zA-Z0-9_\-./]+\.[a-zA-Z0-9]{1,5})'
+    
+    # Second pass: check for unlabeled code sections with file mentions
+    for match in matches:
+        section_title = match.group(1).strip()
+        section_content = match.group(2).strip()
+        
+        # Skip already processed file sections and empty sections
+        if not section_content or section_title in ["Summary", "Overview of Changes", "Overview", "Recommendations", "Next Steps"]:
+            continue
+        
+        if not any(section_title in title for sections in file_sections.values() for title in sections):
+            # Try to find file mentions in the content
+            file_mentions = re.findall(file_mention_pattern, section_content)
+            if file_mentions:
+                primary_file = file_mentions[0]  # Use the first file mention
+                if primary_file not in file_sections:
+                    file_sections[primary_file] = []
+                file_sections[primary_file].append(f"## {section_title}\n\n{section_content}")
     
     success = True
     
     # Post overview sections first
-    if sections:
-        overview_text = "\n\n".join(sections)
+    if overview_sections:
+        overview_text = "\n\n".join(overview_sections)
         overview_success = post_review_comment(repo, pr_number, token, overview_text)
         success = success and overview_success
     
-    # Post detailed feedback sections
-    if detailed_sections:
-        detailed_text = "\n\n".join(detailed_sections)
-        detailed_success = post_review_comment(repo, pr_number, token, detailed_text)
-        success = success and detailed_success
+    # Post file-specific sections
+    for filename, sections in file_sections.items():
+        file_text = f"## Feedback for `{filename}`\n\n" + "\n\n".join(sections)
+        file_success = post_review_comment(repo, pr_number, token, file_text)
+        success = success and file_success
+    
+    # Post recommendations as their own comment if they exist
+    if recommendation_section:
+        rec_success = post_review_comment(repo, pr_number, token, recommendation_section)
+        success = success and rec_success
     
     return success
 

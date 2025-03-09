@@ -234,7 +234,7 @@ def generate_prompt(diff: str, files: List[Dict[str, Any]], config: Dict[str, An
     )
     
     # Add appropriate format instructions based on template style and configuration
-    if template_style == "coderabbit":
+    if template_style == "coderabbit" or split_comments:
         prompt += (
             "Format your review as a markdown document with the following structure:\n\n"
         )
@@ -251,10 +251,16 @@ def generate_prompt(diff: str, files: List[Dict[str, Any]], config: Dict[str, An
                 "Provide a bullet-point list of the key changes made in this PR, focusing on what was added, modified, or fixed.\n\n"
             )
         
+        # Prompt for file-based organization
         prompt += (
-            "## Analysis\n"
-            "Organized into sections for each file with specific feedback.\n"
-            "For specific issues, reference the line number when possible.\n\n"
+            "## File-specific feedback\n"
+            "IMPORTANT: Organize your feedback as separate sections for each file, using the following format:\n\n"
+            "## filename.ext\n"
+            "Detailed feedback specific to this file.\n\n"
+            "## another_file.ext\n"
+            "Detailed feedback specific to this file.\n\n"
+            "For each file section, include specific issues referencing line numbers when possible.\n"
+            "Each filename should be a section header starting with '## ' followed by the exact filename.\n\n"
         )
         
         if include_recommendations:
