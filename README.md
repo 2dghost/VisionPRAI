@@ -226,32 +226,16 @@ file_filtering:
 
 ## Examples
 
-### PR Overview Comment
-
-The AI provides a high-level summary of the changes:
-
-![image](https://github.com/user-attachments/assets/6709d4f6-86a0-497f-a5ae-8534eb4f37ca)
-
-
 ### Line-Specific Code Comments
 
 The AI also adds detailed comments directly on specific lines of code:
 
-```
-In file src/utils.py, line 42:
-This operation could result in a division by zero error when count is 0.
-Consider adding a guard clause to check for this condition.
-```
+![image](https://github.com/user-attachments/assets/6709d4f6-86a0-497f-a5ae-8534eb4f37ca)
 
-```
-In file src/auth.py, line 78:
-The user input here is passed directly to SQL query without sanitization.
-This creates an SQL injection vulnerability. Use parameterized queries instead.
-```
 
 ## Environment Variables
 
-- `GH_TOKEN`: GitHub authentication token for posting comments
+- `GITHUB_TOKEN`: GitHub authentication token for posting comments
 - `{PROVIDER}_API_KEY`: API key for your chosen AI provider:
   - `ANTHROPIC_API_KEY` for Claude models
   - `OPENAI_API_KEY` for GPT models
