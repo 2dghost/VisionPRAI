@@ -78,7 +78,12 @@ class ModelAdapter:
             if response.status_code != 200:
                 raise RuntimeError(f"OpenAI API error: {response.text}")
                 
-            return response.json()["choices"][0]["text"]
+            # Check response format and adapt accordingly
+            data = response.json()
+            if "text" in data["choices"][0]:
+                return data["choices"][0]["text"]
+            else:
+                return data["choices"][0]["message"]["content"]
         else:
             # Chat completions API
             payload = {

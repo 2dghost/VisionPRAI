@@ -10,10 +10,11 @@ import argparse
 import json
 import logging
 import yaml
+import re
 from typing import Dict, List, Optional, Any, Tuple
 
-from model_adapters import ModelAdapter
-from utils import (
+from src.model_adapters import ModelAdapter
+from src.utils import (
     get_pr_diff,
     get_pr_files,
     post_review_comment,
@@ -57,9 +58,9 @@ def get_environment_variables() -> Tuple[str, str, str]:
         Tuple of (github_token, repo, pr_number)
     """
     # Get GitHub token from environment or config
-    github_token = os.environ.get("GITHUB_TOKEN")
+    github_token = os.environ.get("GH_TOKEN")
     if not github_token:
-        logger.error("GITHUB_TOKEN environment variable is required")
+        logger.error("GH_TOKEN environment variable is required")
         sys.exit(1)
         
     # Get repository and PR number

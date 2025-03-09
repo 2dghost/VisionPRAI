@@ -30,7 +30,7 @@ jobs:
     steps:
       - uses: yourusername/ai-pr-reviewer@main
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ secrets.GH_TOKEN }}
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
           # Optional: model: "gpt-4" 
           # Optional: focus: "security,performance"
@@ -55,7 +55,7 @@ jobs:
 
 4. Run the reviewer:
    ```bash
-   export GITHUB_TOKEN="your-github-token"
+   export GH_TOKEN="your-github-token"
    export OPENAI_API_KEY="your-openai-key"
    export PR_REPOSITORY="owner/repo"
    export PR_NUMBER="123"
@@ -96,7 +96,7 @@ review:
 
 ## Environment Variables
 
-- `GITHUB_TOKEN`: GitHub authentication token
+- `GH_TOKEN`: GitHub authentication token
 - `{PROVIDER}_API_KEY`: API key for the chosen AI provider (e.g., `OPENAI_API_KEY`)
 - `PR_REPOSITORY`: Repository in the format "owner/repo" (for local runs)
 - `PR_NUMBER`: Pull request number (for local runs)
@@ -116,6 +116,24 @@ We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) f
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## Troubleshooting
+
+### Common Issues
+
+#### Module Import Errors
+If you encounter `ModuleNotFoundError: No module named 'model_adapters'` or similar errors:
+- Make sure you're running the script from the project root directory, not inside the `src` directory
+- Use the module syntax when running: `python -m src.review_pr` instead of `python src/review_pr.py`
+
+#### GitHub Authentication Errors
+- Ensure your GitHub token has the necessary permissions (repo access)
+- Check that you've set the `GH_TOKEN` environment variable correctly
+
+#### API Provider Errors
+- Verify that you've set the API key for your chosen provider
+- Check the provider's status page for service outages
+- Ensure your model has access within your API subscription/tier
 
 ## Acknowledgements
 
