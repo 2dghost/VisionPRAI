@@ -10,13 +10,30 @@ import yaml
 import logging
 from typing import Dict, List, Tuple, Any, Optional, Pattern
 
-from src.custom_exceptions import (
-    CommentExtractionError,
-    DiffParsingError,
-    InvalidConfigurationError,
-    MissingConfigurationError
-)
-from src.logging_config import get_logger, with_context
+import sys
+import os
+
+# Add the parent directory to sys.path to support both local and GitHub Actions environments
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+try:
+    # Try direct imports first (for GitHub Actions and package usage)
+    from custom_exceptions import (
+        CommentExtractionError,
+        DiffParsingError,
+        InvalidConfigurationError,
+        MissingConfigurationError
+    )
+    from logging_config import get_logger, with_context
+except ImportError:
+    # Fall back to src-prefixed imports (for local development)
+    from src.custom_exceptions import (
+        CommentExtractionError,
+        DiffParsingError,
+        InvalidConfigurationError,
+        MissingConfigurationError
+    )
+    from src.logging_config import get_logger, with_context
 
 # Set up logger
 logger = get_logger(__name__)

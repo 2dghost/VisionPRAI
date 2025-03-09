@@ -13,25 +13,54 @@ import re
 import yaml
 from typing import Dict, List, Optional, Any, Tuple
 
-from src.model_adapters import ModelAdapter
-from src.utils import (
-    get_pr_diff,
-    get_pr_files,
-    post_review_comment,
-    post_line_comments,
-    parse_diff_for_lines,
-    extract_code_blocks
-)
-from src.comment_extractor import CommentExtractor
-from src.file_filter import FileFilter
-from src.custom_exceptions import (
-    VisionPRAIError,
-    ConfigurationError,
-    MissingConfigurationError,
-    InvalidConfigurationError,
-    CommentExtractionError
-)
-from src.logging_config import get_logger, with_context
+import sys
+import os
+
+# Add the parent directory to sys.path to support both local and GitHub Actions environments
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+try:
+    # Try direct imports first (for GitHub Actions and package usage)
+    from model_adapters import ModelAdapter
+    from utils import (
+        get_pr_diff,
+        get_pr_files,
+        post_review_comment,
+        post_line_comments,
+        parse_diff_for_lines,
+        extract_code_blocks
+    )
+    from comment_extractor import CommentExtractor
+    from file_filter import FileFilter
+    from custom_exceptions import (
+        VisionPRAIError,
+        ConfigurationError,
+        MissingConfigurationError,
+        InvalidConfigurationError,
+        CommentExtractionError
+    )
+    from logging_config import get_logger, with_context
+except ImportError:
+    # Fall back to src-prefixed imports (for local development)
+    from src.model_adapters import ModelAdapter
+    from src.utils import (
+        get_pr_diff,
+        get_pr_files,
+        post_review_comment,
+        post_line_comments,
+        parse_diff_for_lines,
+        extract_code_blocks
+    )
+    from src.comment_extractor import CommentExtractor
+    from src.file_filter import FileFilter
+    from src.custom_exceptions import (
+        VisionPRAIError,
+        ConfigurationError,
+        MissingConfigurationError, 
+        InvalidConfigurationError,
+        CommentExtractionError
+    )
+    from src.logging_config import get_logger, with_context
 
 # Get structured logger
 logger = get_logger("ai-pr-reviewer")

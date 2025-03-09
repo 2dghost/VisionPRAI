@@ -27,12 +27,19 @@ jobs:
       - name: Run AI Review
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Optional: Add your model-specific API key
+          # Add the required API key based on your config.yaml provider
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Other API keys if needed
           # OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          # ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           # GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           # MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
           # HUGGINGFACE_API_KEY: ${{ secrets.HUGGINGFACE_API_KEY }}
           GITHUB_EVENT_NUMBER: ${{ github.event.pull_request.number }}
+          # Set the Python path to include the current directory
+          PYTHONPATH: ${{ github.workspace }}
         run: |
+          # Show current directory structure for debugging
+          find . -type f -name "*.py" | sort
+          
+          # Run the review script
           python src/review_pr.py --verbose
