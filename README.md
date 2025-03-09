@@ -9,7 +9,7 @@ AI PR Reviewer brings CodeRabbit-style AI code reviews to GitHub with the freedo
 ## Features
 
 - **🤖 Choose Your AI**: Works with OpenAI, Anthropic Claude, Google Gemini, Mistral, etc.
-- **💬 In-Line Code Comments**: AI feedback appears directly alongside your code (like CodeRabbit)
+- **💬 In-Line Code Comments**: AI feedback appears directly alongside your code
 - **🔒 Privacy Focused**: Your code never leaves your GitHub Actions environment
 - **⚙️ Highly Customizable**: Configure focus areas, file filters, and model behavior
 - **🚀 5-Minute Setup**: Just add the workflow file and your API key to get started
