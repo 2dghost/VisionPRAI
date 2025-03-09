@@ -119,6 +119,8 @@ def post_review_sections(repo: str, pr_number: str, token: str, review_text: str
     Returns:
         True if the comments were posted successfully, False otherwise
     """
+    import time
+    
     if not split_sections:
         return post_review_comment(repo, pr_number, token, review_text)
     
@@ -129,6 +131,7 @@ def post_review_sections(repo: str, pr_number: str, token: str, review_text: str
     overview_sections = []
     file_sections = {}
     recommendation_section = None
+    other_sections = []
     
     # First pass: categorize sections
     for match in matches:
@@ -161,54 +164,121 @@ def post_review_sections(repo: str, pr_number: str, token: str, review_text: str
                 file_sections[filename] = []
             
             file_sections[filename].append(section_text)
-        # Other sections go with their closest file
+        # Other sections go to a separate list
         else:
-            # Add to the last file section if any exist
-            if file_sections:
-                last_file = list(file_sections.keys())[-1]
-                file_sections[last_file].append(section_text)
-            # Otherwise add to overview
-            else:
-                overview_sections.append(section_text)
+            other_sections.append(section_text)
     
-    # Look for file mentions within sections
+    # Look for file mentions within other sections
     file_mention_pattern = r'([a-zA-Z0-9_\-./]+\.[a-zA-Z0-9]{1,5})'
     
     # Second pass: check for unlabeled code sections with file mentions
-    for match in matches:
-        section_title = match.group(1).strip()
-        section_content = match.group(2).strip()
-        
-        # Skip already processed file sections and empty sections
-        if not section_content or section_title in ["Summary", "Overview of Changes", "Overview", "Recommendations", "Next Steps"]:
+    for section_text in other_sections:
+        section_lines = section_text.split("\n", 1)
+        if len(section_lines) < 2:
             continue
+            
+        section_title = section_lines[0].replace("#", "").strip()
+        section_content = section_lines[1].strip()
         
-        if not any(section_title in title for sections in file_sections.values() for title in sections):
-            # Try to find file mentions in the content
-            file_mentions = re.findall(file_mention_pattern, section_content)
-            if file_mentions:
-                primary_file = file_mentions[0]  # Use the first file mention
-                if primary_file not in file_sections:
-                    file_sections[primary_file] = []
-                file_sections[primary_file].append(f"## {section_title}\n\n{section_content}")
+        # Try to find file mentions in the content
+        file_mentions = re.findall(file_mention_pattern, section_content)
+        if file_mentions:
+            primary_file = file_mentions[0]  # Use the first file mention
+            if primary_file not in file_sections:
+                file_sections[primary_file] = []
+            file_sections[primary_file].append(section_text)
+        else:
+            # If no file mentions found, add to overview
+            overview_sections.append(section_text)
     
     success = True
+    
+    # Function to post with rate limit handling
+    def post_with_retry(content, description):
+        retries = 3
+        for i in range(retries):
+            try:
+                success = post_review_comment(repo, pr_number, token, content)
+                if success:
+                    # Add a small delay to avoid rate limits
+                    time.sleep(0.5)
+                    return True
+                elif i < retries - 1:
+                    # Wait longer before retrying
+                    time.sleep(2)
+            except Exception as e:
+                logger.error(f"Error posting {description} (attempt {i+1}/{retries}): {e}")
+                if i < retries - 1:
+                    time.sleep(2)
+        return False
+    
+    # Limit the number of comments to post to avoid rate limits
+    max_comments = 8  # GitHub has rate limits
+    comment_count = 0
     
     # Post overview sections first
     if overview_sections:
         overview_text = "\n\n".join(overview_sections)
-        overview_success = post_review_comment(repo, pr_number, token, overview_text)
+        # Truncate if too long
+        if len(overview_text) > 65000:
+            overview_text = overview_text[:65000] + "\n\n*(Comment truncated due to length)*"
+        
+        overview_success = post_with_retry(overview_text, "overview comment")
         success = success and overview_success
+        comment_count += 1
     
-    # Post file-specific sections
-    for filename, sections in file_sections.items():
-        file_text = f"## Feedback for `{filename}`\n\n" + "\n\n".join(sections)
-        file_success = post_review_comment(repo, pr_number, token, file_text)
-        success = success and file_success
+    # Post file-specific sections (limit to avoid rate limits)
+    file_items = list(file_sections.items())
+    # If too many files, group some together
+    if len(file_items) > max_comments - 2:  # Reserve space for overview and recommendations
+        grouped_files = {}
+        for filename, sections in file_items:
+            # Use first directory component as a group key
+            if "/" in filename:
+                group = filename.split("/")[0]
+            else:
+                group = "Other Files"
+            
+            if group not in grouped_files:
+                grouped_files[group] = []
+            
+            grouped_files[group].extend([f"### {filename}", *sections])
+        
+        # Post grouped comments
+        for group, sections in grouped_files.items():
+            if comment_count >= max_comments - 1:
+                break
+                
+            group_text = f"## Feedback for files in `{group}`\n\n" + "\n\n".join(sections)
+            # Truncate if too long
+            if len(group_text) > 65000:
+                group_text = group_text[:65000] + "\n\n*(Comment truncated due to length)*"
+                
+            group_success = post_with_retry(group_text, f"grouped files comment ({group})")
+            success = success and group_success
+            comment_count += 1
+    else:
+        # Post individual file comments
+        for filename, sections in file_items:
+            if comment_count >= max_comments - 1:
+                break
+                
+            file_text = f"## Feedback for `{filename}`\n\n" + "\n\n".join(sections)
+            # Truncate if too long
+            if len(file_text) > 65000:
+                file_text = file_text[:65000] + "\n\n*(Comment truncated due to length)*"
+                
+            file_success = post_with_retry(file_text, f"file comment ({filename})")
+            success = success and file_success
+            comment_count += 1
     
     # Post recommendations as their own comment if they exist
-    if recommendation_section:
-        rec_success = post_review_comment(repo, pr_number, token, recommendation_section)
+    if recommendation_section and comment_count < max_comments:
+        # Truncate if too long
+        if len(recommendation_section) > 65000:
+            recommendation_section = recommendation_section[:65000] + "\n\n*(Comment truncated due to length)*"
+            
+        rec_success = post_with_retry(recommendation_section, "recommendations comment")
         success = success and rec_success
     
     return success
