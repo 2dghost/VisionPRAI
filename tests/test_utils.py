@@ -10,6 +10,7 @@ from src.utils import (
     parse_diff_for_lines,
     extract_code_blocks
 )
+from src.review_pr import extract_line_comments
 
 
 class TestUtilFunctions(unittest.TestCase):
@@ -143,6 +144,46 @@ function add(a, b) {
         self.assertEqual(len(blocks), 2)
         self.assertEqual(blocks[0], "def test_function():\n    return 42")
         self.assertEqual(blocks[1], "function add(a, b) {\n    return a + b;\n}")
+    
+    def test_extract_line_comments(self):
+        """Test extracting line-specific comments from review text."""
+        review_text = """
+# Code Review
+
+Overall, the code looks good, but there are a few issues to address:
+
+In src/test.py, line 13:
+This comment is unnecessary and should be removed.
+
+src/test.py:14:
+The variable name 'value' is too generic. Consider using a more descriptive name.
+
+In file `src/utils.py` at line 42:
+This function is missing proper error handling.
+"""
+        file_line_map = {
+            "src/test.py": [(13, "    # This is a new comment"), (14, "    value = 42")],
+            "src/utils.py": [(42, "def process_data():")]
+        }
+        
+        comments = extract_line_comments(review_text, file_line_map)
+        
+        self.assertEqual(len(comments), 3)
+        
+        # Check first comment
+        self.assertEqual(comments[0]["path"], "src/test.py")
+        self.assertEqual(comments[0]["line"], 13)
+        self.assertEqual(comments[0]["body"], "This comment is unnecessary and should be removed.")
+        
+        # Check second comment
+        self.assertEqual(comments[1]["path"], "src/test.py")
+        self.assertEqual(comments[1]["line"], 14)
+        self.assertEqual(comments[1]["body"], "The variable name 'value' is too generic. Consider using a more descriptive name.")
+        
+        # Check third comment
+        self.assertEqual(comments[2]["path"], "src/utils.py")
+        self.assertEqual(comments[2]["line"], 42)
+        self.assertEqual(comments[2]["body"], "This function is missing proper error handling.")
 
 
 if __name__ == '__main__':
