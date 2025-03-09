@@ -230,7 +230,8 @@ file_filtering:
 
 The AI provides a high-level summary of the changes:
 
-![PR Overview Comment](https://github.com/user-attachments/assets/9eda65d1-be94-4bf5-b41a-65a8fe87c698)
+![image](https://github.com/user-attachments/assets/6709d4f6-86a0-497f-a5ae-8534eb4f37ca)
+
 
 ### Line-Specific Code Comments
 
