@@ -23,6 +23,7 @@ from src.utils import (
     extract_code_blocks
 )
 from src.comment_extractor import CommentExtractor
+from src.file_filter import FileFilter
 from src.custom_exceptions import (
     VisionPRAIError,
     ConfigurationError,
@@ -138,13 +139,14 @@ def get_environment_variables() -> Tuple[str, str, str]:
     return github_token, repo, pr_number
 
 
+@with_context
 def generate_prompt(diff: str, files: List[Dict[str, Any]], config: Dict[str, Any]) -> str:
     """
     Generate a prompt for the AI model.
     
     Args:
         diff: The PR diff
-        files: List of files changed in the PR
+        files: List of files changed in the PR (after filtering)
         config: Configuration dictionary
         
     Returns:
@@ -152,6 +154,10 @@ def generate_prompt(diff: str, files: List[Dict[str, Any]], config: Dict[str, An
     """
     # Get focus areas from config
     focus_areas = config.get("review", {}).get("focus_areas", "")
+    
+    # Check if file filtering is enabled
+    file_filtering_enabled = config.get("review", {}).get("file_filtering", {}).get("enabled", False)
+    exclude_patterns = config.get("review", {}).get("file_filtering", {}).get("exclude_patterns", [])
     
     # Extract relevant file info
     file_info = []
@@ -171,6 +177,18 @@ def generate_prompt(diff: str, files: List[Dict[str, Any]], config: Dict[str, An
         f"{focus_areas}\n\n"
         "Make your suggestions actionable, clear, and specific to the code changes.\n"
         "Focus on potential issues, improvements, and best practices.\n\n"
+    )
+    
+    # Add note about file filtering if enabled
+    if file_filtering_enabled and exclude_patterns:
+        patterns_str = ", ".join([f"`{p}`" for p in exclude_patterns])
+        prompt += (
+            f"Note: Some files matching the following patterns were excluded from this review: "
+            f"{patterns_str}.\n\n"
+        )
+    
+    # Add files and diff information
+    prompt += (
         f"Files changed in this PR:\n{json.dumps(file_info, indent=2)}\n\n"
         "PR Diff:\n"
         f"```diff\n{diff}\n```\n\n"
@@ -239,6 +257,20 @@ def review_pr(config_path: Optional[str] = None, verbose: bool = False) -> bool:
     files = get_pr_files(repo, pr_number, github_token)
     if not files:
         logger.warning("No files found. Continuing with diff only.")
+        
+    # Apply file filtering if files were found
+    if files:
+        logger.info("Applying file filtering rules")
+        file_filter = FileFilter(config)
+        original_file_count = len(files)
+        files = file_filter.filter_files(files)
+        
+        if file_filter.enabled:
+            filtered_count = original_file_count - len(files)
+            if filtered_count > 0:
+                logger.info(f"Filtered out {filtered_count} files based on configured rules", 
+                           context={"original_count": original_file_count, 
+                                   "filtered_count": len(files)})
     
     # Generate prompt
     logger.info("Generating prompt for AI review")

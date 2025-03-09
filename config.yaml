@@ -25,8 +25,24 @@ review:
   # Enable line-specific comments (experimental)
   line_comments: true
   
+  # File filtering configuration
+  file_filtering:
+    # Whether to enable file filtering
+    enabled: true
+    
+    # File patterns to exclude from review (using glob syntax)
+    exclude_patterns:
+      - "*.md"         # Exclude markdown files
+      - "*.txt"        # Exclude text files
+      - ".gitignore"   # Exclude .gitignore
+      - "LICENSE"      # Exclude license files
+      - "*.lock"       # Exclude lock files
+      - "*.min.js"     # Exclude minified JavaScript
+      
+    # Maximum file size to review (in KB, 0 = no limit)
+    max_file_size: 500
+  
   # Comment extraction configuration
-  comment_extraction:
     # Regex patterns used to extract line-specific comments from AI review text
     # Each pattern should have two capture groups:
     # 1. The file path
