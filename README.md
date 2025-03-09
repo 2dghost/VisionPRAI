@@ -2,8 +2,6 @@
 
 An open-source tool to automate code reviews on GitHub PRs using any AI model. This tool analyzes pull request diffs and provides actionable feedback to improve code quality.
 
-![AI PR Reviewer Banner](https://github.com/yourusername/ai-pr-reviewer/raw/main/.github/assets/banner.png)
-
 ## Features
 
 - **Model Agnostic**: Connect to any AI provider (OpenAI, Anthropic, Google, Mistral, Ollama, Hugging Face)
@@ -103,11 +101,11 @@ review:
 - `PR_REPOSITORY`: Repository in the format "owner/repo" (for local runs)
 - `PR_NUMBER`: Pull request number (for local runs)
 
-## Examples
 
-### Sample PR Review
+### PR Example
 
-![Sample PR Review](https://github.com/yourusername/ai-pr-reviewer/raw/main/.github/assets/review-example.png)
+![image](https://github.com/user-attachments/assets/9eda65d1-be94-4bf5-b41a-65a8fe87c698)
+
 
 ### Line Comment Example
 
@@ -131,4 +129,3 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ---
 
-Made with ❤️ by the open-source community
