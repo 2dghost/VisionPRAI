@@ -1,5 +1,9 @@
 # AI PR Reviewer
 
+[![AI PR Review](https://github.com/2dghost/VisionPRAI/actions/workflows/pr-review.yml/badge.svg)](https://github.com/2dghost/VisionPRAI/actions/workflows/pr-review.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
+
 **Use any AI model for automated code reviews on GitHub PRs!** 
 
 AI PR Reviewer brings CodeRabbit-style AI code reviews to GitHub with the freedom to choose your own AI provider. Get code reviews directly in your PRs, with line-specific comments attached to the code, using the AI model of your choice (OpenAI, Anthropic Claude, Google Gemini, etc.).
