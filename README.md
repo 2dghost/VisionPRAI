@@ -102,6 +102,11 @@ review:
 - `PR_NUMBER`: Pull request number (for local runs)
 
 
+### PR Example
+
+![image](https://github.com/user-attachments/assets/9eda65d1-be94-4bf5-b41a-65a8fe87c698)
+
+
 ### Line Comment Example
 
 ```
