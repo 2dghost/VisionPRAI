@@ -198,8 +198,19 @@ def post_review_sections(repo: str, pr_number: str, token: str, review_text: str
         # Only try once, don't retry automatically
         try:
             logger.info(f"Posting {description}")
+            
+            # Check content length - GitHub has a hard limit around 65536 chars
+            if len(content) > 65000:
+                content = content[:65000] + "\n\n*(Comment truncated due to length)*"
+                logger.warning(f"{description} was truncated due to length")
+            
+            # Add a longer delay before posting the last comments to avoid rate limits
+            if comment_count >= 4:  # Later comments are more likely to hit rate limits
+                logger.info(f"Adding extra delay before posting comment #{comment_count+1}")
+                time.sleep(2)
+            
             success = post_review_comment(repo, pr_number, token, content)
-            # Add a small delay to avoid rate limits
+            # Add a delay to avoid rate limits
             time.sleep(1)
             return success
         except Exception as e:
@@ -207,7 +218,7 @@ def post_review_sections(repo: str, pr_number: str, token: str, review_text: str
             return False
     
     # Limit the number of comments to post to avoid rate limits
-    max_comments = 8  # GitHub has rate limits
+    max_comments = 5  # Reduced from 8 to avoid hitting GitHub limits
     comment_count = 0
     
     # Post overview sections first
@@ -223,48 +234,61 @@ def post_review_sections(repo: str, pr_number: str, token: str, review_text: str
     
     # Post file-specific sections (limit to avoid rate limits)
     file_items = list(file_sections.items())
-    # If too many files, group some together
-    if len(file_items) > max_comments - 2:  # Reserve space for overview and recommendations
-        grouped_files = {}
-        for filename, sections in file_items:
-            # Use first directory component as a group key
-            if "/" in filename:
-                group = filename.split("/")[0]
+    
+    # Always group files to reduce comment count
+    grouped_files = {}
+    
+    # Group files by directory
+    for filename, sections in file_items:
+        # Use first directory component as a group key
+        if "/" in filename:
+            group = filename.split("/")[0]
+        else:
+            # Group by file extension
+            parts = filename.split(".")
+            if len(parts) > 1:
+                group = f"{parts[-1].upper()} Files"
             else:
                 group = "Other Files"
-            
-            if group not in grouped_files:
-                grouped_files[group] = []
-            
-            grouped_files[group].extend([f"### {filename}", *sections])
         
-        # Post grouped comments
-        for group, sections in grouped_files.items():
-            if comment_count >= max_comments - 1:
-                break
-                
-            group_text = f"## Feedback for files in `{group}`\n\n" + "\n\n".join(sections)
-            # Truncate if too long
-            if len(group_text) > 65000:
-                group_text = group_text[:65000] + "\n\n*(Comment truncated due to length)*"
-                
-            group_success = post_with_retry(group_text, f"grouped files comment ({group})")
-            success = success and group_success
-            comment_count += 1
-    else:
-        # Post individual file comments
-        for filename, sections in file_items:
-            if comment_count >= max_comments - 1:
-                break
-                
-            file_text = f"## Feedback for `{filename}`\n\n" + "\n\n".join(sections)
-            # Truncate if too long
-            if len(file_text) > 65000:
-                file_text = file_text[:65000] + "\n\n*(Comment truncated due to length)*"
-                
-            file_success = post_with_retry(file_text, f"file comment ({filename})")
-            success = success and file_success
-            comment_count += 1
+        if group not in grouped_files:
+            grouped_files[group] = []
+        
+        grouped_files[group].extend([f"### {filename}", *sections])
+    
+    # If still too many groups, consolidate further
+    if len(grouped_files) > max_comments - 2:  # Reserve space for overview and recommendations
+        # Find smallest groups to consolidate
+        groups_by_size = sorted(grouped_files.items(), key=lambda x: len(x[1]))
+        
+        # Keep the largest groups separate, consolidate the rest
+        keep_separate = max_comments - 2
+        consolidated = []
+        
+        for i, (group, sections) in enumerate(groups_by_size):
+            if i >= len(groups_by_size) - keep_separate:
+                # Keep larger groups separate
+                continue
+            
+            # Add to consolidated group
+            consolidated.extend([f"### {group}", *sections])
+            # Remove from grouped_files
+            grouped_files.pop(group)
+        
+        # Add consolidated group if it has content
+        if consolidated:
+            grouped_files["Other Feedback"] = consolidated
+    
+    # Post grouped comments
+    for group, sections in grouped_files.items():
+        if comment_count >= max_comments - 1:
+            logger.warning(f"Skipping remaining {len(grouped_files) - comment_count + 1} file groups due to comment limit")
+            break
+            
+        group_text = f"## Feedback for {group}\n\n" + "\n\n".join(sections)
+        group_success = post_with_retry(group_text, f"grouped files comment ({group})")
+        success = success and group_success
+        comment_count += 1
     
     # Post recommendations as their own comment if they exist
     if recommendation_section and comment_count < max_comments:
