@@ -114,15 +114,6 @@ That's it! Your AI PR Reviewer will run automatically on new pull requests.
 
 ## Configuration
 
-### Supported AI Providers
-
-- **OpenAI**: GPT-3.5, GPT-4
-- **Anthropic**: Claude 3 models
-- **Google**: Gemini models
-- **Mistral**: Mistral models
-- **Ollama**: Local model support
-- **Hugging Face**: Any compatible model
-
 ### Changing AI Providers
 
 To use a different AI model, modify the `config.yaml` file:
