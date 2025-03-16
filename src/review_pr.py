@@ -71,7 +71,7 @@ logger = get_logger("ai-pr-reviewer")
 @with_context
 def load_config(config_path: str = "config.yaml") -> Dict[str, Any]:
     """
-    Load configuration from a YAML file.
+    Load configuration from a YAML file and merge with cursor rules.
     
     Args:
         config_path: Path to the config file
@@ -96,6 +96,27 @@ def load_config(config_path: str = "config.yaml") -> Dict[str, Any]:
         logger.error(f"Failed to parse YAML in config file: {e}",
                     context={"config_path": config_path, "error": str(e)})
         raise InvalidConfigurationError("config_file", f"Invalid YAML format: {e}")
+    
+    # Load cursor rules if they exist
+    cursor_rules_path = os.path.join(os.getcwd(), ".cursor", "rules")
+    if os.path.exists(cursor_rules_path):
+        logger.info("Loading cursor rules", context={"rules_path": cursor_rules_path})
+        try:
+            rules = {}
+            for rule_file in os.listdir(cursor_rules_path):
+                if rule_file.endswith(".mdc"):
+                    with open(os.path.join(cursor_rules_path, rule_file), "r") as f:
+                        rule_content = f.read()
+                        rules[rule_file[:-4]] = rule_content  # Remove .mdc extension
+            
+            # Add cursor rules to config
+            if rules:
+                config["cursor_rules"] = rules
+                logger.info("Successfully loaded cursor rules", 
+                           context={"rules_count": len(rules)})
+        except Exception as e:
+            logger.warning(f"Failed to load cursor rules: {e}",
+                         context={"error": str(e)})
     
     # Validate minimum required configuration
     if not config:
@@ -186,6 +207,9 @@ def generate_prompt(diff: str, files: List[Dict[str, Any]], config: Dict[str, An
     # Get focus areas from config
     focus_areas = config.get("review", {}).get("focus_areas", "")
     
+    # Get cursor rules if available
+    cursor_rules = config.get("cursor_rules", {})
+    
     # Check if file filtering is enabled
     file_filtering_enabled = config.get("review", {}).get("file_filtering", {}).get("enabled", False)
     exclude_patterns = config.get("review", {}).get("file_filtering", {}).get("exclude_patterns", [])
@@ -212,10 +236,25 @@ def generate_prompt(diff: str, files: List[Dict[str, Any]], config: Dict[str, An
     # Create a comprehensive prompt
     prompt = (
         "You are an expert code reviewer following best practices. "
-        "Analyze this PR diff and provide feedback on:\n"
+        "Analyze this PR diff and provide feedback with concrete code improvements.\n"
         f"{focus_areas}\n\n"
-        "Make your suggestions actionable, clear, and specific to the code changes.\n"
-        "Focus on potential issues, improvements, and best practices.\n\n"
+    )
+    
+    # Add cursor rules guidance if available
+    if cursor_rules:
+        prompt += "Follow these project-specific guidelines:\n\n"
+        for rule_name, rule_content in cursor_rules.items():
+            prompt += f"### {rule_name} Guidelines\n{rule_content}\n\n"
+    
+    prompt += (
+        "For each issue you identify:\n"
+        "1. Explain the problem\n"
+        "2. Provide the exact code fix using ```suggestion blocks\n"
+        "3. Explain why your suggestion is better\n\n"
+        "Format code suggestions as GitHub-style suggestion blocks:\n"
+        "```suggestion\n"
+        "// your improved code here\n"
+        "```\n\n"
     )
     
     # Add note about file filtering if enabled
@@ -233,49 +272,24 @@ def generate_prompt(diff: str, files: List[Dict[str, Any]], config: Dict[str, An
         f"```diff\n{diff}\n```\n\n"
     )
     
-    # Always use the file-oriented format regardless of template style
+    # Format instructions
     prompt += (
         "Format your review as a markdown document with the following structure:\n\n"
+        "## Summary\n"
+        "Start with a concise 2-3 sentence summary of the PR's purpose and overall quality.\n\n"
+        "## Overview of Changes\n"
+        "Provide a bullet-point list of the key changes made in this PR.\n\n"
+        "## Code Improvements\n"
+        "For each file that needs improvements:\n"
+        "### filename.ext\n"
+        "1. Issue description\n"
+        "```suggestion\n"
+        "// Improved code\n"
+        "```\n"
+        "Explanation of why this improvement is better\n"
     )
-    
-    if include_summary:
-        prompt += (
-            "## Summary\n"
-            "Start with a concise 2-3 sentence summary of the PR's purpose and overall quality.\n\n"
-        )
-    
-    if include_overview:
-        prompt += (
-            "## Overview of Changes\n"
-            "Provide a bullet-point list of the key changes made in this PR, focusing on what was added, modified, or fixed.\n\n"
-        )
-    
-    # Prompt for file-based organization + line-specific comments
-    prompt += (
-        "## File-specific feedback\n"
-        "IMPORTANT: Organize your feedback in two ways to ensure proper code review formatting:\n\n"
-        "1. FIRST, provide detailed file-level feedback using this format:\n"
-        "## filename.ext\n"
-        "Overall feedback about this file, design patterns, structure, etc.\n\n"
-        "## another_file.ext\n"
-        "Overall feedback about this file.\n\n"
-        "2. SECOND, provide line-specific comments using one of these formats:\n"
-        "- In filename.ext, line 42: This code could be improved by...\n"
-        "- filename.ext:25: Consider using a more descriptive variable name\n"
-        "- In file `config.yaml` at line 10: The configuration is missing...\n\n"
-        "It is CRITICAL to use both approaches. Make sure the line numbers you reference actually exist in the changed files.\n"
-        "The line-specific comments will be displayed directly alongside the code in GitHub.\n\n"
-    )
-    
-    if include_recommendations:
-        prompt += (
-            "## Recommendations\n"
-            "End with 2-3 key recommendations or next steps.\n"
-        )
     
     return prompt
-
-
 
 
 @with_context

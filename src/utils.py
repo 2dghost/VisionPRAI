@@ -92,7 +92,20 @@ def post_review_comment(repo: str, pr_number: str, token: str, review_text: str)
         "Authorization": f"token {token}"
     }
     url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews"
-    data = {"body": review_text, "event": "COMMENT"}
+    
+    # Create a review with a distinct AI reviewer identity
+    data = {
+        "body": review_text,
+        "event": "COMMENT",
+        "committer": {
+            "name": "AI Code Reviewer",
+            "email": "ai-reviewer@visionprai.dev"
+        },
+        "author": {
+            "name": "AI Code Reviewer",
+            "email": "ai-reviewer@visionprai.dev"
+        }
+    }
     
     try:
         # Don't log here, as this will be called from post_with_retry which already logs
@@ -346,9 +359,18 @@ def post_line_comments(
             "body": comment["body"]
         })
     
+    # Create review data with AI reviewer identity
     data = {
         "comments": gh_comments,
-        "event": "COMMENT"
+        "event": "COMMENT",
+        "committer": {
+            "name": "AI Code Reviewer",
+            "email": "ai-reviewer@visionprai.dev"
+        },
+        "author": {
+            "name": "AI Code Reviewer",
+            "email": "ai-reviewer@visionprai.dev"
+        }
     }
     
     try:
