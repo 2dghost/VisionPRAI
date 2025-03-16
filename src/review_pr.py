@@ -71,7 +71,7 @@ logger = get_logger("ai-pr-reviewer")
 @with_context
 def load_config(config_path: str = "config.yaml") -> Dict[str, Any]:
     """
-    Load configuration from a YAML file.
+    Load configuration from a YAML file and merge with cursor rules.
     
     Args:
         config_path: Path to the config file
@@ -96,6 +96,27 @@ def load_config(config_path: str = "config.yaml") -> Dict[str, Any]:
         logger.error(f"Failed to parse YAML in config file: {e}",
                     context={"config_path": config_path, "error": str(e)})
         raise InvalidConfigurationError("config_file", f"Invalid YAML format: {e}")
+    
+    # Load cursor rules if they exist
+    cursor_rules_path = os.path.join(os.getcwd(), ".cursor", "rules")
+    if os.path.exists(cursor_rules_path):
+        logger.info("Loading cursor rules", context={"rules_path": cursor_rules_path})
+        try:
+            rules = {}
+            for rule_file in os.listdir(cursor_rules_path):
+                if rule_file.endswith(".mdc"):
+                    with open(os.path.join(cursor_rules_path, rule_file), "r") as f:
+                        rule_content = f.read()
+                        rules[rule_file[:-4]] = rule_content  # Remove .mdc extension
+            
+            # Add cursor rules to config
+            if rules:
+                config["cursor_rules"] = rules
+                logger.info("Successfully loaded cursor rules", 
+                           context={"rules_count": len(rules)})
+        except Exception as e:
+            logger.warning(f"Failed to load cursor rules: {e}",
+                         context={"error": str(e)})
     
     # Validate minimum required configuration
     if not config:
@@ -186,6 +207,9 @@ def generate_prompt(diff: str, files: List[Dict[str, Any]], config: Dict[str, An
     # Get focus areas from config
     focus_areas = config.get("review", {}).get("focus_areas", "")
     
+    # Get cursor rules if available
+    cursor_rules = config.get("cursor_rules", {})
+    
     # Check if file filtering is enabled
     file_filtering_enabled = config.get("review", {}).get("file_filtering", {}).get("enabled", False)
     exclude_patterns = config.get("review", {}).get("file_filtering", {}).get("exclude_patterns", [])
@@ -212,19 +236,30 @@ def generate_prompt(diff: str, files: List[Dict[str, Any]], config: Dict[str, An
     # Create a comprehensive prompt
     prompt = (
         "You are an expert code reviewer following best practices. "
-        "Analyze this PR diff and provide feedback on:\n"
+        "Analyze this PR diff and provide feedback with concrete code improvements.\n"
         f"{focus_areas}\n\n"
-        "Make your suggestions actionable, clear, and specific to the code changes.\n"
-        "Focus on potential issues, improvements, and best practices.\n\n"
+        "IMPORTANT: For each issue you find, you MUST provide a code suggestion using GitHub's suggestion format:\n\n"
+        "Problem: <clear explanation of the issue>\n\n"
+        "```suggestion\n"
+        "<exact code that should replace the original code>\n"
+        "```\n\n"
+        "Explanation: <why this change improves the code>\n\n"
+        "Guidelines for suggestions:\n"
+        "1. Each suggestion must be preceded by a clear explanation of the issue\n"
+        "2. The suggestion block must contain the complete fixed code, not just the changed part\n"
+        "3. After each suggestion, explain why your solution is better\n"
+        "4. Make sure to reference specific line numbers from the diff\n"
+        "5. The suggestion must match the exact indentation of the original code\n"
+        "6. Do not include any additional formatting or comments in the suggestion block\n"
+        "7. ALWAYS provide at least one code suggestion if you find any issues\n"
+        "8. Format suggestions EXACTLY as shown above with ```suggestion and ``` on their own lines\n\n"
     )
     
-    # Add note about file filtering if enabled
-    if file_filtering_enabled and exclude_patterns:
-        patterns_str = ", ".join([f"`{p}`" for p in exclude_patterns])
-        prompt += (
-            f"Note: Some files matching the following patterns were excluded from this review: "
-            f"{patterns_str}.\n\n"
-        )
+    # Add cursor rules guidance if available
+    if cursor_rules:
+        prompt += "Follow these project-specific guidelines:\n\n"
+        for rule_name, rule_content in cursor_rules.items():
+            prompt += f"### {rule_name} Guidelines\n{rule_content}\n\n"
     
     # Add files and diff information
     prompt += (
@@ -233,49 +268,27 @@ def generate_prompt(diff: str, files: List[Dict[str, Any]], config: Dict[str, An
         f"```diff\n{diff}\n```\n\n"
     )
     
-    # Always use the file-oriented format regardless of template style
+    # Format instructions
     prompt += (
-        "Format your review as a markdown document with the following structure:\n\n"
+        "Format your review as follows:\n\n"
+        "1. Start with a brief summary of the changes\n"
+        "2. For each file that needs improvements:\n"
+        "   ### filename.ext:line_number\n"
+        "   Problem: <clear explanation>\n\n"
+        "   ```suggestion\n"
+        "   <exact replacement code>\n"
+        "   ```\n\n"
+        "   Explanation: <why this improves the code>\n\n"
+        "3. End with overall recommendations\n\n"
+        "Remember:\n"
+        "- ALWAYS include specific line numbers\n"
+        "- Make suggestions ONLY for lines in the diff\n"
+        "- Each suggestion must be complete and valid code\n"
+        "- If you find ANY issues, you MUST provide at least one code suggestion\n"
+        "- Format suggestions EXACTLY as shown with ```suggestion and ``` on their own lines\n"
     )
-    
-    if include_summary:
-        prompt += (
-            "## Summary\n"
-            "Start with a concise 2-3 sentence summary of the PR's purpose and overall quality.\n\n"
-        )
-    
-    if include_overview:
-        prompt += (
-            "## Overview of Changes\n"
-            "Provide a bullet-point list of the key changes made in this PR, focusing on what was added, modified, or fixed.\n\n"
-        )
-    
-    # Prompt for file-based organization + line-specific comments
-    prompt += (
-        "## File-specific feedback\n"
-        "IMPORTANT: Organize your feedback in two ways to ensure proper code review formatting:\n\n"
-        "1. FIRST, provide detailed file-level feedback using this format:\n"
-        "## filename.ext\n"
-        "Overall feedback about this file, design patterns, structure, etc.\n\n"
-        "## another_file.ext\n"
-        "Overall feedback about this file.\n\n"
-        "2. SECOND, provide line-specific comments using one of these formats:\n"
-        "- In filename.ext, line 42: This code could be improved by...\n"
-        "- filename.ext:25: Consider using a more descriptive variable name\n"
-        "- In file `config.yaml` at line 10: The configuration is missing...\n\n"
-        "It is CRITICAL to use both approaches. Make sure the line numbers you reference actually exist in the changed files.\n"
-        "The line-specific comments will be displayed directly alongside the code in GitHub.\n\n"
-    )
-    
-    if include_recommendations:
-        prompt += (
-            "## Recommendations\n"
-            "End with 2-3 key recommendations or next steps.\n"
-        )
     
     return prompt
-
-
 
 
 @with_context
@@ -401,32 +414,31 @@ def review_pr(config_path: Optional[str] = None, verbose: bool = False) -> bool:
             
             # Now extract file-specific sections and convert them to line comments for each file
             file_sections = {}
-            file_section_pattern = r'(?:^|\n)## ([^\n:]+\.[^\n:]+)\s*\n(.*?)(?=\n## [^\n:]+\.[^\n:]|\Z)'
+            file_section_pattern = r'(?:^|\n)### ([^\n:]+):(\d+)\s*\n(.*?)(?=\n### [^\n:]+:\d+|\Z)'
             
             for match in re.finditer(file_section_pattern, review_text, re.DOTALL):
                 filename = match.group(1).strip()
-                content = match.group(2).strip()
+                line_number = int(match.group(2))
+                content = match.group(3).strip()
                 
                 if filename in file_line_map:
-                    file_sections[filename] = content
+                    # Find the matching position for this line number
+                    matching_lines = [
+                        (line_num, pos, content) 
+                        for line_num, pos, content in file_line_map[filename] 
+                        if line_num == line_number
+                    ]
+                    if matching_lines:
+                        # Use the first matching position
+                        _, position, _ = matching_lines[0]
+                        file_sections[filename] = {
+                            "path": filename,
+                            "line": position,  # Use position instead of line number
+                            "body": content
+                        }
             
             # Convert file sections to line comments 
-            additional_comments = []
-            
-            for filename, content in file_sections.items():
-                # Get the line numbers for this file from the diff
-                if not file_line_map.get(filename):
-                    continue
-                    
-                # Get the first changed line in the file
-                first_line = file_line_map[filename][0][0] if file_line_map[filename] else 1
-                
-                # Create a comment for the file
-                additional_comments.append({
-                    "path": filename,
-                    "line": first_line,
-                    "body": f"## File Review\n\n{content}"
-                })
+            additional_comments = list(file_sections.values())
             
             # Combine standard and file-section comments
             all_comments = standard_line_comments + additional_comments
