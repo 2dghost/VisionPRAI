@@ -252,41 +252,69 @@ class CommentExtractor:
             # Extract and validate comments
             comments = []
             
-            # Also look for file-specific sections with suggestions
-            file_section_pattern = r'### ([^:\n]+):(\d+)\s*\n(.*?)(?=\n### |$)'
-            for match in re.finditer(file_section_pattern, review_text, re.DOTALL):
-                file_path = match.group(1).strip()
-                line_num = int(match.group(2))
-                section_content = match.group(3).strip()
-                
-                self.logger.debug(f"Found file section: {file_path}:{line_num}")
-                
-                # Check if the file and line exist in the diff
-                if not self.validate_file_path(file_path, file_line_map):
-                    self.logger.warning(f"File {file_path} not found in diff, skipping comment")
-                    continue
+            # Log the available files in the diff for debugging
+            self.logger.debug(f"Available files in diff: {list(file_line_map.keys())}")
+            
+            # Try multiple patterns to find file-specific comments
+            patterns = [
+                # Standard pattern with ### header
+                r'### ([^:\n]+):(\d+)\s*\n(.*?)(?=\n### [^:\n]+:\d+|\Z)',
+                # Alternative pattern with "In file X, line Y:" format
+                r'(?:^|\n)(?:In|At) ([^,\n]+),\s*line (\d+):(.*?)(?=\n(?:In|At) [^,\n]+,\s*line \d+:|\Z)',
+                # Another alternative with "filename.ext line Y:" format
+                r'(?:^|\n)([^:\s\n]+)\s+line\s+(\d+):(.*?)(?=\n[^:\s\n]+\s+line\s+\d+:|\Z)'
+            ]
+            
+            # Try each pattern
+            for pattern_idx, pattern in enumerate(patterns):
+                self.logger.debug(f"Trying pattern {pattern_idx+1}: {pattern}")
+                for match in re.finditer(pattern, review_text, re.DOTALL):
+                    file_path = match.group(1).strip()
+                    line_num = int(match.group(2))
+                    section_content = match.group(3).strip()
                     
-                if not self.validate_line_number(file_path, line_num, file_line_map):
-                    self.logger.warning(f"Line {line_num} not found in {file_path} diff, skipping comment")
-                    continue
-                
-                # Find the corresponding position in the diff
-                position = None
-                for line, pos, _ in file_line_map[file_path]:
-                    if line == line_num:
-                        position = pos
-                        break
-                
-                if position is not None:
-                    comments.append({
-                        "path": file_path,
-                        "line": line_num,
-                        "position": position,
-                        "body": section_content
-                    })
-                    self.logger.debug(f"Added comment for {file_path}:{line_num} at position {position}")
-                else:
-                    self.logger.warning(f"Could not find position for {file_path}:{line_num}")
+                    self.logger.debug(f"Found file section with pattern {pattern_idx+1}: {file_path}:{line_num}")
+                    
+                    # Check if the file and line exist in the diff
+                    if not self.validate_file_path(file_path, file_line_map):
+                        self.logger.warning(f"File {file_path} not found in diff, checking for similar files")
+                        # Try to find a similar file name
+                        similar_files = [f for f in file_line_map.keys() if f.endswith(file_path) or file_path.endswith(f)]
+                        if similar_files:
+                            file_path = similar_files[0]
+                            self.logger.info(f"Using similar file {file_path} instead")
+                        else:
+                            self.logger.warning(f"No similar file found for {file_path}, skipping comment")
+                            continue
+                    
+                    # Find the corresponding position in the diff
+                    position = None
+                    for line, pos, _ in file_line_map[file_path]:
+                        if line == line_num:
+                            position = pos
+                            break
+                    
+                    if position is not None:
+                        comments.append({
+                            "path": file_path,
+                            "line": line_num,
+                            "position": position,
+                            "body": section_content
+                        })
+                        self.logger.debug(f"Added comment for {file_path}:{line_num} at position {position}")
+                    else:
+                        self.logger.warning(f"Could not find position for {file_path}:{line_num}, trying closest line")
+                        # Try to find the closest line number
+                        if file_line_map[file_path]:
+                            closest_line = min(file_line_map[file_path], key=lambda x: abs(x[0] - line_num))
+                            closest_line_num, closest_pos, _ = closest_line
+                            self.logger.info(f"Using closest line {closest_line_num} at position {closest_pos}")
+                            comments.append({
+                                "path": file_path,
+                                "line": closest_line_num,
+                                "position": closest_pos,
+                                "body": f"[Originally for line {line_num}] {section_content}"
+                            })
             
             # Process standard line comments
             for match in matches:
@@ -319,6 +347,40 @@ class CommentExtractor:
                     "position": position,
                     "body": comment_text
                 })
+            
+            # If we still have no comments, try to extract any code blocks with file references
+            if not comments:
+                self.logger.warning("No comments found with standard patterns, trying to extract code blocks")
+                code_block_pattern = r'```(?:suggestion)?\n(.*?)```'
+                code_blocks = re.finditer(code_block_pattern, review_text, re.DOTALL)
+                
+                for i, block_match in enumerate(code_blocks):
+                    code_block = block_match.group(1).strip()
+                    # Look for file references before the code block
+                    context_before = review_text[:block_match.start()].split('\n')[-3:]  # Get 3 lines before
+                    context_text = '\n'.join(context_before)
+                    
+                    # Try to find file references in the context
+                    file_ref_pattern = r'([^/\s]+\.[a-zA-Z0-9]+)'
+                    file_refs = re.findall(file_ref_pattern, context_text)
+                    
+                    if file_refs:
+                        file_path = file_refs[0]
+                        # Try to find a matching file in the diff
+                        matching_files = [f for f in file_line_map.keys() if f.endswith(file_path)]
+                        
+                        if matching_files:
+                            file_path = matching_files[0]
+                            # Use the first line in the file as a fallback
+                            if file_line_map[file_path]:
+                                line_num, pos, _ = file_line_map[file_path][0]
+                                comments.append({
+                                    "path": file_path,
+                                    "line": line_num,
+                                    "position": pos,
+                                    "body": f"Code suggestion:\n\n```suggestion\n{code_block}\n```"
+                                })
+                                self.logger.info(f"Added fallback comment for {file_path}:{line_num}")
             
             self.logger.info(f"Extracted {len(comments)} line comments total")
             return comments

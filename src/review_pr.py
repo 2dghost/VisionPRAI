@@ -254,7 +254,9 @@ def generate_prompt(diff: str, files: List[Dict[str, Any]], config: Dict[str, An
         "5. Make suggestions ONLY for lines that exist in the diff\n"
         "6. If you find ANY issues, you MUST provide at least one code suggestion\n"
         "7. IMPORTANT: Each file-specific comment MUST start with '### filename.ext:line_number' format\n"
-        "8. DO NOT use any other format for file-specific comments\n\n"
+        "8. DO NOT use any other format for file-specific comments\n"
+        "9. ALWAYS include file-specific comments in the 'File-Specific Comments' section\n"
+        "10. NEVER skip providing file-specific comments - they are the most important part of the review\n\n"
     )
     
     # Add cursor rules guidance if available
@@ -300,6 +302,8 @@ def generate_prompt(diff: str, files: List[Dict[str, Any]], config: Dict[str, An
     sections.append(
         "## File-Specific Comments\n"
         "Include all line-specific comments here, using the exact format specified above (### filename.ext:line_number).\n"
+        "This section MUST contain at least one file-specific comment for each file with issues.\n"
+        "IMPORTANT: This section is required and will be used to post comments on specific lines of code.\n"
     )
     
     if include_recommendations:
@@ -522,12 +526,23 @@ def review_pr(config_path: Optional[str] = None, verbose: bool = False) -> bool:
             file_section_matches = list(re.finditer(file_section_pattern, detailed_feedback_text, re.DOTALL))
             logger.debug(f"Found {len(file_section_matches)} file section matches")
             
+            # Log the detailed feedback text for debugging
+            logger.debug(f"Detailed feedback text (first 1000 chars): {detailed_feedback_text[:1000]}")
+            
+            # If no file section matches were found, try a more lenient pattern
+            if not file_section_matches:
+                logger.warning("No file section matches found with primary pattern, trying alternative pattern")
+                alt_file_section_pattern = r'(?:^|\n)(?:In|File|At) ([^\n:,]+)[,:]? (?:line|at line) (\d+)[:]?\s*\n(.*?)(?=\n(?:In|File|At) [^\n:,]+[,:]? (?:line|at line) \d+[:]?|\Z)'
+                file_section_matches = list(re.finditer(alt_file_section_pattern, detailed_feedback_text, re.DOTALL))
+                logger.debug(f"Found {len(file_section_matches)} file section matches with alternative pattern")
+            
             for match in file_section_matches:
                 filename = match.group(1).strip()
                 line_number = int(match.group(2))
                 content = match.group(3).strip()
                 
                 logger.debug(f"Processing file section match: {filename}:{line_number}")
+                logger.debug(f"Content preview: {content[:100]}...")
                 
                 if filename in file_line_map:
                     # Find the matching position for this line number
@@ -548,8 +563,34 @@ def review_pr(config_path: Optional[str] = None, verbose: bool = False) -> bool:
                         logger.debug(f"Added file section for {filename}:{line_number} at position {position}")
                     else:
                         logger.warning(f"No matching position found for {filename}:{line_number}")
+                        # Try to find the closest line number as a fallback
+                        if file_line_map[filename]:
+                            closest_line = min(file_line_map[filename], key=lambda x: abs(x[0] - line_number))
+                            closest_line_num, closest_pos, _ = closest_line
+                            logger.info(f"Using closest line {closest_line_num} at position {closest_pos} as fallback")
+                            file_sections[f"{filename}:{closest_line_num}"] = {
+                                "path": filename,
+                                "line": closest_line_num,
+                                "position": closest_pos,
+                                "body": f"[Originally for line {line_number}] {content}"
+                            }
                 else:
                     logger.warning(f"File {filename} not found in file_line_map")
+                    # Try to find a similar filename as a fallback
+                    similar_files = [f for f in file_line_map.keys() if filename in f or f in filename]
+                    if similar_files:
+                        similar_file = similar_files[0]
+                        logger.info(f"Using similar file {similar_file} as fallback")
+                        # Use the first line of the similar file
+                        if file_line_map[similar_file]:
+                            first_line = file_line_map[similar_file][0]
+                            line_num, pos, _ = first_line
+                            file_sections[f"{similar_file}:{line_num}"] = {
+                                "path": similar_file,
+                                "line": line_num,
+                                "position": pos,
+                                "body": f"[Originally for {filename}:{line_number}] {content}"
+                            }
             
             # Convert file sections to line comments 
             additional_comments = list(file_sections.values())

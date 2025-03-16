@@ -6,6 +6,8 @@ Handles GitHub API operations and other helper functions.
 import os
 import re
 import logging
+import json
+import time
 from typing import Dict, List, Optional, Tuple, Any, Union
 
 import requests
@@ -340,6 +342,10 @@ def post_line_comments(
     Returns:
         True if successful, False otherwise
     """
+    if not comments:
+        logger.warning("No comments to post")
+        return True
+        
     headers = {
         "Accept": "application/vnd.github.v3+json",
         "Authorization": f"Bearer {token}"
@@ -348,11 +354,14 @@ def post_line_comments(
     
     # Format comments for the API
     formatted_comments = []
-    for comment in comments:
+    for i, comment in enumerate(comments):
         # Extract suggestion if present
         body = comment["body"]
         suggestion_pattern = r"```suggestion\n(.*?)```"
         suggestion_match = re.search(suggestion_pattern, body, re.DOTALL)
+        
+        # Log the comment details for debugging
+        logger.debug(f"Comment {i+1}/{len(comments)}: {comment['path']}:{comment.get('line', 'unknown')}")
         
         formatted_comment = {
             "path": comment["path"],
@@ -377,12 +386,50 @@ def post_line_comments(
     
     try:
         logger.info(f"Posting {len(comments)} line comments on PR #{pr_number} in {repo}")
+        
+        # Log the request payload for debugging (excluding large bodies)
+        debug_data = {
+            "event": data["event"],
+            "comments": [
+                {
+                    "path": c["path"],
+                    "position" if "position" in c else "line": c.get("position", c.get("line")),
+                    "body_length": len(c["body"])
+                }
+                for c in data["comments"]
+            ]
+        }
+        logger.debug(f"Request payload: {json.dumps(debug_data)}")
+        
         response = requests.post(url, headers=headers, json=data)
         
         # Log response details for debugging
         logger.debug(f"GitHub API response status: {response.status_code}")
         if response.status_code >= 400:
             logger.error(f"GitHub API error: {response.text}")
+            
+            # If we get a 422 error (validation failed), try posting comments one by one
+            if response.status_code == 422:
+                logger.info("Received 422 error, trying to post comments one by one")
+                success = True
+                for i, comment in enumerate(formatted_comments):
+                    try:
+                        single_data = {
+                            "event": "COMMENT",
+                            "comments": [comment]
+                        }
+                        single_response = requests.post(url, headers=headers, json=single_data)
+                        if single_response.status_code >= 400:
+                            logger.error(f"Failed to post comment {i+1}: {single_response.text}")
+                            success = False
+                        else:
+                            logger.info(f"Successfully posted comment {i+1}/{len(formatted_comments)}")
+                        # Add a delay to avoid rate limits
+                        time.sleep(2)
+                    except Exception as e:
+                        logger.error(f"Error posting comment {i+1}: {str(e)}")
+                        success = False
+                return success
             
         response.raise_for_status()
         return True
