@@ -349,10 +349,23 @@ def post_line_comments(
     # Format comments for the API
     formatted_comments = []
     for comment in comments:
+        # Extract suggestion if present
+        body = comment["body"]
+        suggestion_pattern = r"```suggestion\n(.*?)```"
+        suggestion_match = re.search(suggestion_pattern, body, re.DOTALL)
+        
+        if suggestion_match:
+            suggestion_text = suggestion_match.group(1).strip()
+            # Format as GitHub suggestion
+            body = body.replace(
+                f"```suggestion\n{suggestion_match.group(1)}```",
+                f"```suggestion\n{suggestion_text}\n```"
+            )
+        
         formatted_comment = {
             "path": comment["path"],
-            "body": comment["body"],
-            "position": comment["line"],  # GitHub API expects position, not line
+            "body": body,
+            "line": comment.get("position", comment["line"]),  # Use position if available, fallback to line
             "side": "RIGHT"  # Comment on the new version of the file
         }
         formatted_comments.append(formatted_comment)

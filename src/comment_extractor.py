@@ -240,7 +240,7 @@ class CommentExtractor:
             file_line_map: Mapping of files to their line numbers and positions
             
         Returns:
-            List of comment dictionaries with 'path', 'line', and 'body' keys
+            List of comment dictionaries with 'path', 'line', 'position', and 'body' keys
             
         Raises:
             CommentExtractionError: If comment extraction fails
@@ -251,45 +251,57 @@ class CommentExtractor:
             
             # Extract and validate comments
             comments = []
+            
             for match in matches:
                 file_path = match["file"]
                 line_num = match["line"]
                 
-                # Skip if file or line number is invalid
-                if not self.validate_line_number(file_path, line_num, file_line_map):
-                    self.logger.warning(f"Invalid line number {line_num} for file {file_path}")
-                    continue
-                
-                # Find the position in the diff for this line number
-                matching_lines = [
-                    (line, pos, content) 
-                    for line, pos, content in file_line_map[file_path] 
-                    if line == line_num
-                ]
-                
-                if not matching_lines:
-                    self.logger.warning(f"Could not find position for line {line_num} in {file_path}")
-                    continue
-                
-                # Use the first matching position
-                _, position, _ = matching_lines[0]
-                
-                # Extract the comment text
+                # Get the comment text
                 comment_text = self.extract_comment_text(review_text, match)
+                if not comment_text:
+                    continue
                 
-                # Create the comment
-                comment = {
+                # Find the corresponding position in the diff
+                position = None
+                if file_path in file_line_map:
+                    for line, pos, context in file_line_map[file_path]:
+                        if line == line_num:
+                            position = pos
+                            break
+                
+                if position is None:
+                    self.logger.warning(
+                        f"Could not find position for line {line_num} in {file_path}",
+                        context={"file": file_path, "line": line_num}
+                    )
+                    continue
+                
+                # Extract any code suggestions
+                suggestion_pattern = r"```suggestion\n(.*?)```"
+                suggestion_match = re.search(suggestion_pattern, comment_text, re.DOTALL)
+                
+                if suggestion_match:
+                    # Ensure the suggestion has proper newlines
+                    suggestion_text = suggestion_match.group(1).strip()
+                    comment_text = comment_text.replace(
+                        f"```suggestion\n{suggestion_match.group(1)}```",
+                        f"```suggestion\n{suggestion_text}\n```"
+                    )
+                
+                comments.append({
                     "path": file_path,
-                    "line": position,  # Use position instead of line number
+                    "line": line_num,
+                    "position": position,
                     "body": comment_text
-                }
-                comments.append(comment)
+                })
             
             return comments
+            
         except Exception as e:
-            error_msg = f"Failed to extract line comments: {str(e)}"
-            self.logger.error(error_msg, exc_info=True)
-            raise CommentExtractionError(error_msg)
+            raise CommentExtractionError(
+                f"Failed to extract line comments: {str(e)}",
+                error_code="COMMENT_EXTRACTION_FAILED"
+            ) from e
 
 
 # Legacy function for backward compatibility

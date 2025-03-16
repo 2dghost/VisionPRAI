@@ -238,15 +238,17 @@ def generate_prompt(diff: str, files: List[Dict[str, Any]], config: Dict[str, An
         "You are an expert code reviewer following best practices. "
         "Analyze this PR diff and provide feedback with concrete code improvements.\n"
         f"{focus_areas}\n\n"
-        "IMPORTANT: For each issue you find, you MUST provide a code suggestion using the following format:\n\n"
+        "IMPORTANT: For each issue you find, you MUST provide a code suggestion using GitHub's suggestion format:\n\n"
         "```suggestion\n"
-        "The exact fixed code that should replace the original code\n"
+        "<exact fixed code that should replace the original code>\n"
         "```\n\n"
         "Guidelines for suggestions:\n"
         "1. Each suggestion must be preceded by a clear explanation of the issue\n"
         "2. The suggestion block must contain the complete fixed code, not just the changed part\n"
         "3. After each suggestion, explain why your solution is better\n"
-        "4. Make sure to reference specific line numbers from the diff\n\n"
+        "4. Make sure to reference specific line numbers from the diff\n"
+        "5. The suggestion must match the exact indentation of the original code\n"
+        "6. Do not include any additional formatting or comments in the suggestion block\n\n"
     )
     
     # Add cursor rules guidance if available
