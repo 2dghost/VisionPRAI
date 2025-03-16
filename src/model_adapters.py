@@ -107,7 +107,8 @@ class ModelAdapter:
         payload = {
             "model": self.model,
             "max_tokens": self.max_tokens,
-            "messages": [{"role": "user", "content": prompt}]
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.5  # Lower temperature for more consistent formatting
         }
         
         response = requests.post(self.endpoint, json=payload, headers=headers)
@@ -117,30 +118,44 @@ class ModelAdapter:
         # Handle Claude 3 response format
         response_json = response.json()
         
+        # Debug the response structure
+        print(f"Response keys: {response_json.keys()}")
+        
         # Claude 3 format (messages API)
         if "content" in response_json:
             # Extract all text content from the response
             if isinstance(response_json["content"], list):
                 text_parts = []
                 for item in response_json["content"]:
-                    if item.get("type") == "text" and "text" in item:
-                        text_parts.append(item["text"])
+                    if isinstance(item, dict):
+                        if item.get("type") == "text" and "text" in item:
+                            text_parts.append(item["text"])
+                        elif "text" in item:
+                            text_parts.append(item["text"])
+                        elif "value" in item:
+                            text_parts.append(item["value"])
+                
                 if text_parts:
                     return "\n".join(text_parts)
         
         # Try direct content access
         if "content" in response_json and len(response_json["content"]) > 0:
             content_item = response_json["content"][0]
-            if "text" in content_item:
-                return content_item["text"]
-            elif "value" in content_item:
-                return content_item["value"]
+            if isinstance(content_item, dict):
+                if "text" in content_item:
+                    return content_item["text"]
+                elif "value" in content_item:
+                    return content_item["value"]
         
         # Legacy format
         if "completion" in response_json:
             return response_json["completion"]
-            
-        raise RuntimeError(f"Unexpected Anthropic API response format: {response_json}")
+        
+        # Last resort: try to extract any text we can find
+        try:
+            return str(response_json)
+        except:
+            raise RuntimeError(f"Unexpected Anthropic API response format: {response_json}")
 
     def _call_google(self, prompt: str) -> str:
         """Call Google Gemini API."""

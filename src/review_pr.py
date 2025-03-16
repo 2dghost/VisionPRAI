@@ -267,29 +267,30 @@ def generate_prompt(diff: str, files: List[Dict[str, Any]], config: Dict[str, An
         f"```diff\n{diff}\n```\n\n"
     )
     
-    # Format instructions
+    # Format instructions - IMPORTANT: Keep the exact format consistent for regex extraction
     prompt += (
-        "Format your review as follows:\n\n"
+        "Your review MUST follow this EXACT format with these EXACT section headers:\n\n"
     )
     
-    # Add conditional sections based on format configuration
+    # Add sections with consistent headers that match our regex patterns
+    sections = []
+    
     if include_summary:
-        prompt += (
-            "1. Start with a brief summary of the changes:\n"
+        sections.append(
             "## Summary\n"
             "Brief 2-3 sentence overview of the PR\n\n"
         )
     
     if include_overview:
-        prompt += (
-            "2. Provide an overview of the changes:\n"
+        sections.append(
             "## Overview of Changes\n"
             "- Key change 1\n"
             "- Key change 2\n\n"
         )
     
-    prompt += (
-        "3. For each file that needs improvements:\n"
+    # Always include the detailed feedback section
+    sections.append(
+        "## Detailed Feedback\n"
         "### filename.ext:line_number\n"
         "Problem: <clear explanation>\n\n"
         "```suggestion\n"
@@ -299,19 +300,23 @@ def generate_prompt(diff: str, files: List[Dict[str, Any]], config: Dict[str, An
     )
     
     if include_recommendations:
-        prompt += (
-            "4. End with overall recommendations:\n"
+        sections.append(
             "## Recommendations\n"
             "- Recommendation 1\n"
             "- Recommendation 2\n\n"
         )
     
+    # Add numbered sections to the prompt
+    for i, section in enumerate(sections, 1):
+        prompt += f"{i}. {section}"
+    
     prompt += (
-        "Remember:\n"
+        "IMPORTANT REMINDERS:\n"
         "- ALWAYS include specific line numbers in the format 'filename.ext:line_number'\n"
         "- Make suggestions ONLY for lines in the diff\n"
         "- Each suggestion must be complete and valid code\n"
         "- If you find ANY issues, you MUST provide at least one code suggestion\n"
+        "- Use the EXACT section headers shown above (## Summary, ## Overview of Changes, etc.)\n"
     )
     
     return prompt
@@ -396,6 +401,14 @@ def review_pr(config_path: Optional[str] = None, verbose: bool = False) -> bool:
     try:
         logger.info(f"Sending PR to {model_config['provider']} {model_config['model']} for review")
         review_text = model_adapter.generate_response(prompt)
+        
+        # Log the first part of the response for debugging
+        logger.debug(f"AI response first 500 chars: {review_text[:500]}")
+        
+        # Verify that we received a non-empty response
+        if not review_text or len(review_text.strip()) < 10:
+            logger.error("Received empty or very short response from AI model")
+            return False
     except Exception as e:
         logger.error(f"Error generating review: {str(e)}")
         return False
@@ -406,15 +419,32 @@ def review_pr(config_path: Optional[str] = None, verbose: bool = False) -> bool:
     # Extract just summary and overview sections
     summary_pattern = r'(?:^|\n)## Summary\s*\n(.*?)(?=\n##|\Z)'
     overview_pattern = r'(?:^|\n)## Overview of Changes\s*\n(.*?)(?=\n##|\Z)'
+    recommendations_pattern = r'(?:^|\n)## Recommendations\s*\n(.*?)(?=\n##|\Z)'
     
     summary_match = re.search(summary_pattern, review_text, re.DOTALL)
     overview_match = re.search(overview_pattern, review_text, re.DOTALL)
+    recommendations_match = re.search(recommendations_pattern, review_text, re.DOTALL)
+    
+    # Log the review text for debugging
+    logger.debug(f"Review text received: {review_text[:500]}...")
     
     overview_text = "# AI Review Summary\n\n"
+    
     if summary_match:
         overview_text += f"## Summary\n{summary_match.group(1).strip()}\n\n"
+        logger.debug("Summary section found and extracted")
+    else:
+        logger.warning("No summary section found in the review text")
+    
     if overview_match:
         overview_text += f"## Overview of Changes\n{overview_match.group(1).strip()}\n\n"
+        logger.debug("Overview section found and extracted")
+    else:
+        logger.warning("No overview section found in the review text")
+    
+    if recommendations_match:
+        overview_text += f"## Recommendations\n{recommendations_match.group(1).strip()}\n\n"
+        logger.debug("Recommendations section found and extracted")
     
     # Add a note about code-specific comments
     overview_text += "\n\n> Detailed feedback has been added as review comments on specific code lines."
@@ -440,9 +470,25 @@ def review_pr(config_path: Optional[str] = None, verbose: bool = False) -> bool:
             
             # Now extract file-specific sections and convert them to line comments for each file
             file_sections = {}
+            
+            # Look for comments in both the main review and the Detailed Feedback section
+            detailed_feedback_pattern = r'(?:^|\n)## Detailed Feedback\s*\n(.*?)(?=\n##|\Z)'
+            detailed_feedback_match = re.search(detailed_feedback_pattern, review_text, re.DOTALL)
+            
+            # If we found a Detailed Feedback section, extract comments from there
+            detailed_feedback_text = ""
+            if detailed_feedback_match:
+                detailed_feedback_text = detailed_feedback_match.group(1).strip()
+                logger.debug("Detailed Feedback section found")
+            else:
+                # If no Detailed Feedback section, use the whole review text
+                detailed_feedback_text = review_text
+                logger.warning("No Detailed Feedback section found, using entire review text")
+            
+            # Extract file-specific comments
             file_section_pattern = r'(?:^|\n)### ([^\n:]+):(\d+)\s*\n(.*?)(?=\n### [^\n:]+:\d+|\Z)'
             
-            for match in re.finditer(file_section_pattern, review_text, re.DOTALL):
+            for match in re.finditer(file_section_pattern, detailed_feedback_text, re.DOTALL):
                 filename = match.group(1).strip()
                 line_number = int(match.group(2))
                 content = match.group(3).strip()
