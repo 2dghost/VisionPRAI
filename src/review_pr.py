@@ -238,6 +238,15 @@ def generate_prompt(diff: str, files: List[Dict[str, Any]], config: Dict[str, An
         "You are an expert code reviewer following best practices. "
         "Analyze this PR diff and provide feedback with concrete code improvements.\n"
         f"{focus_areas}\n\n"
+        "IMPORTANT: For each issue you find, you MUST provide a code suggestion using the following format:\n\n"
+        "```suggestion\n"
+        "The exact fixed code that should replace the original code\n"
+        "```\n\n"
+        "Guidelines for suggestions:\n"
+        "1. Each suggestion must be preceded by a clear explanation of the issue\n"
+        "2. The suggestion block must contain the complete fixed code, not just the changed part\n"
+        "3. After each suggestion, explain why your solution is better\n"
+        "4. Make sure to reference specific line numbers from the diff\n\n"
     )
     
     # Add cursor rules guidance if available
@@ -245,25 +254,6 @@ def generate_prompt(diff: str, files: List[Dict[str, Any]], config: Dict[str, An
         prompt += "Follow these project-specific guidelines:\n\n"
         for rule_name, rule_content in cursor_rules.items():
             prompt += f"### {rule_name} Guidelines\n{rule_content}\n\n"
-    
-    prompt += (
-        "For each issue you identify:\n"
-        "1. Explain the problem\n"
-        "2. Provide the exact code fix using ```suggestion blocks\n"
-        "3. Explain why your suggestion is better\n\n"
-        "Format code suggestions as GitHub-style suggestion blocks:\n"
-        "```suggestion\n"
-        "// your improved code here\n"
-        "```\n\n"
-    )
-    
-    # Add note about file filtering if enabled
-    if file_filtering_enabled and exclude_patterns:
-        patterns_str = ", ".join([f"`{p}`" for p in exclude_patterns])
-        prompt += (
-            f"Note: Some files matching the following patterns were excluded from this review: "
-            f"{patterns_str}.\n\n"
-        )
     
     # Add files and diff information
     prompt += (
@@ -281,12 +271,16 @@ def generate_prompt(diff: str, files: List[Dict[str, Any]], config: Dict[str, An
         "Provide a bullet-point list of the key changes made in this PR.\n\n"
         "## Code Improvements\n"
         "For each file that needs improvements:\n"
-        "### filename.ext\n"
-        "1. Issue description\n"
+        "### filename.ext:line_number\n"
+        "Problem: Describe the issue\n\n"
         "```suggestion\n"
-        "// Improved code\n"
-        "```\n"
-        "Explanation of why this improvement is better\n"
+        "// The complete fixed code\n"
+        "```\n\n"
+        "Explanation: Why this change improves the code\n\n"
+        "Remember to:\n"
+        "1. Always include line numbers in file headers\n"
+        "2. Make suggestions specific to the actual lines in the diff\n"
+        "3. Ensure suggestions contain complete, valid code\n"
     )
     
     return prompt
@@ -415,32 +409,31 @@ def review_pr(config_path: Optional[str] = None, verbose: bool = False) -> bool:
             
             # Now extract file-specific sections and convert them to line comments for each file
             file_sections = {}
-            file_section_pattern = r'(?:^|\n)## ([^\n:]+\.[^\n:]+)\s*\n(.*?)(?=\n## [^\n:]+\.[^\n:]|\Z)'
+            file_section_pattern = r'(?:^|\n)### ([^\n:]+):(\d+)\s*\n(.*?)(?=\n### [^\n:]+:\d+|\Z)'
             
             for match in re.finditer(file_section_pattern, review_text, re.DOTALL):
                 filename = match.group(1).strip()
-                content = match.group(2).strip()
+                line_number = int(match.group(2))
+                content = match.group(3).strip()
                 
                 if filename in file_line_map:
-                    file_sections[filename] = content
+                    # Find the matching position for this line number
+                    matching_lines = [
+                        (line_num, pos, content) 
+                        for line_num, pos, content in file_line_map[filename] 
+                        if line_num == line_number
+                    ]
+                    if matching_lines:
+                        # Use the first matching position
+                        _, position, _ = matching_lines[0]
+                        file_sections[filename] = {
+                            "path": filename,
+                            "line": position,  # Use position instead of line number
+                            "body": content
+                        }
             
             # Convert file sections to line comments 
-            additional_comments = []
-            
-            for filename, content in file_sections.items():
-                # Get the line numbers for this file from the diff
-                if not file_line_map.get(filename):
-                    continue
-                    
-                # Get the first changed line in the file
-                first_line = file_line_map[filename][0][0] if file_line_map[filename] else 1
-                
-                # Create a comment for the file
-                additional_comments.append({
-                    "path": filename,
-                    "line": first_line,
-                    "body": f"## File Review\n\n{content}"
-                })
+            additional_comments = list(file_sections.values())
             
             # Combine standard and file-section comments
             all_comments = standard_line_comments + additional_comments

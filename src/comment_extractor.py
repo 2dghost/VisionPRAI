@@ -118,13 +118,13 @@ class CommentExtractor:
                             context={"patterns_count": len(self.patterns)})
 
     @with_context
-    def validate_file_path(self, file_path: str, file_line_map: Dict[str, List[Tuple[int, str]]]) -> bool:
+    def validate_file_path(self, file_path: str, file_line_map: Dict[str, List[Tuple[int, int, str]]]) -> bool:
         """
         Validate that a file path exists in the diff.
         
         Args:
             file_path: Path to the file
-            file_line_map: Mapping of files to line numbers from the diff
+            file_line_map: Mapping of files to their line numbers and positions
             
         Returns:
             True if the file path exists in the diff, False otherwise
@@ -142,29 +142,23 @@ class CommentExtractor:
 
     @with_context
     def validate_line_number(self, file_path: str, line_num: int, 
-                            file_line_map: Dict[str, List[Tuple[int, str]]]) -> bool:
+                            file_line_map: Dict[str, List[Tuple[int, int, str]]]) -> bool:
         """
-        Validate that a line number exists in the specified file in the diff.
+        Validate that a line number exists in the file's diff.
         
         Args:
             file_path: Path to the file
             line_num: Line number to validate
-            file_line_map: Mapping of files to line numbers from the diff
+            file_line_map: Mapping of files to their line numbers and positions
             
         Returns:
-            True if the line number is valid for the file, False otherwise
+            True if the line number is valid, False otherwise
         """
-        if not self.validate_file_path(file_path, file_line_map):
+        if file_path not in file_line_map:
             return False
-        
-        valid_lines = [line for line, _ in file_line_map[file_path]]
-        valid = line_num in valid_lines
-        
-        if not valid:
-            self.logger.debug(f"Line number {line_num} not found in file {file_path}", 
-                             context={"file_path": file_path, "line_num": line_num})
-        
-        return valid
+            
+        # Check if the line number exists in the file's diff
+        return any(line == line_num for line, _, _ in file_line_map[file_path])
 
     @with_context
     def match_comment_patterns(self, review_text: str) -> List[Dict[str, Any]]:
@@ -190,8 +184,8 @@ class CommentExtractor:
                     
                     matches.append({
                         "pattern_index": i,
-                        "file_path": file_path,
-                        "line_num": line_num,
+                        "file": file_path,
+                        "line": line_num,
                         "match": match
                     })
                 except (IndexError, ValueError) as e:
@@ -237,69 +231,75 @@ class CommentExtractor:
 
     @with_context
     def extract_line_comments(self, review_text: str, 
-                             file_line_map: Dict[str, List[Tuple[int, str]]]) -> List[Dict[str, Any]]:
+                             file_line_map: Dict[str, List[Tuple[int, int, str]]]) -> List[Dict[str, Any]]:
         """
-        Extract line-specific comments from the review text.
+        Extract line-specific comments from review text.
         
         Args:
-            review_text: The review text from the AI
-            file_line_map: Mapping of files to line numbers from the diff
+            review_text: The review text to extract comments from
+            file_line_map: Mapping of files to their line numbers and positions
             
         Returns:
-            List of line comments in the format expected by GitHub API
+            List of comment dictionaries with 'path', 'line', and 'body' keys
             
         Raises:
-            CommentExtractionError: If there's an error during comment extraction
+            CommentExtractionError: If comment extraction fails
         """
-        if not review_text:
-            self.logger.warning("Empty review text provided for comment extraction")
-            return []
-        
-        if not file_line_map:
-            self.logger.warning("Empty file line map provided for comment extraction")
-            return []
-        
         try:
-            # Find all comment patterns in the review text
+            # Find all pattern matches
             matches = self.match_comment_patterns(review_text)
             
-            # Extract comment text and validate file paths and line numbers
+            # Extract and validate comments
             comments = []
             for match in matches:
-                file_path = match["file_path"]
-                line_num = match["line_num"]
+                file_path = match["file"]
+                line_num = match["line"]
                 
-                # Validate file path and line number
+                # Skip if file or line number is invalid
                 if not self.validate_line_number(file_path, line_num, file_line_map):
+                    self.logger.warning(f"Invalid line number {line_num} for file {file_path}")
                     continue
                 
-                # Extract comment text
+                # Find the position in the diff for this line number
+                matching_lines = [
+                    (line, pos, content) 
+                    for line, pos, content in file_line_map[file_path] 
+                    if line == line_num
+                ]
+                
+                if not matching_lines:
+                    self.logger.warning(f"Could not find position for line {line_num} in {file_path}")
+                    continue
+                
+                # Use the first matching position
+                _, position, _ = matching_lines[0]
+                
+                # Extract the comment text
                 comment_text = self.extract_comment_text(review_text, match)
                 
-                comments.append({
+                # Create the comment
+                comment = {
                     "path": file_path,
-                    "line": line_num,
+                    "line": position,  # Use position instead of line number
                     "body": comment_text
-                })
+                }
+                comments.append(comment)
             
-            self.logger.info(f"Extracted {len(comments)} valid line comments from review",
-                           context={"comments_count": len(comments)})
             return comments
-        
         except Exception as e:
             error_msg = f"Failed to extract line comments: {str(e)}"
             self.logger.error(error_msg, exc_info=True)
-            raise CommentExtractionError(error_msg) from e
+            raise CommentExtractionError(error_msg)
 
 
 # Legacy function for backward compatibility
-def extract_line_comments(review_text: str, file_line_map: Dict[str, List[Tuple[int, str]]]) -> List[Dict[str, Any]]:
+def extract_line_comments(review_text: str, file_line_map: Dict[str, List[Tuple[int, int, str]]]) -> List[Dict[str, Any]]:
     """
     Legacy function to maintain backward compatibility with the original implementation.
     
     Args:
         review_text: The review text from the AI
-        file_line_map: Mapping of files to line numbers from the diff
+        file_line_map: Mapping of files to their line numbers and positions
         
     Returns:
         List of line comments in the format expected by GitHub API

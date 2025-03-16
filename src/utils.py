@@ -349,15 +349,17 @@ def post_line_comments(
     # Format comments for the API
     formatted_comments = []
     for comment in comments:
-        formatted_comments.append({
+        formatted_comment = {
             "path": comment["path"],
-            "line": comment["line"],
-            "body": comment["body"]
-        })
+            "body": comment["body"],
+            "position": comment["line"],  # GitHub API expects position, not line
+            "side": "RIGHT"  # Comment on the new version of the file
+        }
+        formatted_comments.append(formatted_comment)
     
     data = {
-        "comments": formatted_comments,
-        "event": "COMMENT"
+        "event": "COMMENT",
+        "comments": formatted_comments
     }
     
     try:
@@ -370,7 +372,7 @@ def post_line_comments(
         return False
 
 
-def parse_diff_for_lines(diff_text: str) -> Dict[str, List[Tuple[int, str]]]:
+def parse_diff_for_lines(diff_text: str) -> Dict[str, List[Tuple[int, int, str]]]:
     """
     Parse a diff to extract file paths and line numbers.
     Useful for posting line-specific comments.
@@ -379,14 +381,21 @@ def parse_diff_for_lines(diff_text: str) -> Dict[str, List[Tuple[int, str]]]:
         diff_text: The diff text from GitHub
         
     Returns:
-        Dictionary mapping file paths to list of (line_number, line_content) tuples
+        Dictionary mapping file paths to list of (line_number, position, line_content) tuples
+        where position is the line's position in the diff (required for GitHub API)
     """
     result = {}
     current_file = None
     line_number = 0
+    position = 0  # Track position in the diff
     
     # Extract filename and line information from diff
     for line in diff_text.split('\n'):
+        # Reset position counter for each new file
+        if line.startswith('diff --git'):
+            position = 0
+            continue
+            
         # New file in diff
         if line.startswith('+++'):
             path_match = re.match(r'\+\+\+ b/(.*)', line)
@@ -394,18 +403,38 @@ def parse_diff_for_lines(diff_text: str) -> Dict[str, List[Tuple[int, str]]]:
                 current_file = path_match.group(1)
                 result[current_file] = []
                 line_number = 0
+            position += 1
+            continue
+            
+        # Skip removal marker lines
+        if line.startswith('---'):
+            position += 1
+            continue
+            
         # Line numbers in hunk header
-        elif line.startswith('@@'):
-            match = re.search(r'@@ -\d+,\d+ \+(\d+),\d+ @@', line)
+        if line.startswith('@@'):
+            match = re.search(r'@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@', line)
             if match:
-                line_number = int(match.group(1)) - 1  # -1 because we'll increment before using
-        # Added or context lines (not removed lines)
-        elif line.startswith('+') or line.startswith(' '):
-            if current_file is not None:
-                line_number += 1
-                # Only include added lines (not context lines)
-                if line.startswith('+'):
-                    result[current_file].append((line_number, line[1:]))
+                line_number = int(match.group(1)) - 1  # -1 because we increment before using
+            position += 1
+            continue
+            
+        # Track actual diff lines
+        position += 1
+        
+        # Skip removal lines
+        if line.startswith('-'):
+            continue
+            
+        # Process addition and context lines
+        if line.startswith('+'):
+            line_number += 1
+            if current_file:
+                result[current_file].append((line_number, position, line[1:]))
+        elif not line.startswith('\\'):  # Skip "No newline" markers
+            line_number += 1
+            if current_file:
+                result[current_file].append((line_number, position, line))
     
     return result
 
