@@ -6,6 +6,17 @@ Thank you for your interest in contributing to the AI PR Reviewer project! We we
 
 By participating in this project, you agree to act with respect, kindness, and empathy toward other contributors. We aim to foster an inclusive and welcoming community.
 
+## Development Guidelines
+
+This project uses Cursor AI for development assistance. Please follow these guidelines:
+
+1. Install [Cursor](https://cursor.sh/) as your development environment
+2. The `.cursor/rules` directory contains project-specific guidelines for:
+   - Code style and best practices
+   - Documentation requirements
+   - Pull request process
+3. These rules will automatically guide Cursor AI when working with the codebase
+
 ## How to Contribute
 
 ### Reporting Issues
