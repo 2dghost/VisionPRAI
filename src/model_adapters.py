@@ -114,14 +114,21 @@ class ModelAdapter:
         if response.status_code != 200:
             raise RuntimeError(f"Anthropic API error: {response.text}")
         
-        # Handle both old and new API response formats
+        # Handle Claude 3 response format
         response_json = response.json()
-        if "content" in response_json and isinstance(response_json["content"], list):
-            return response_json["content"][0]["text"]
-        elif "content" in response_json and isinstance(response_json["content"], list) and "value" in response_json["content"][0]:
-            return response_json["content"][0]["value"]
-        else:
-            raise RuntimeError(f"Unexpected Anthropic API response format: {response_json}")
+        if "content" in response_json:
+            content = response_json["content"]
+            if isinstance(content, list) and len(content) > 0:
+                if "text" in content[0]:
+                    return content[0]["text"]
+                elif "value" in content[0]:
+                    return content[0]["value"]
+        
+        # Try legacy format
+        if "completion" in response_json:
+            return response_json["completion"]
+            
+        raise RuntimeError(f"Unexpected Anthropic API response format: {response_json}")
 
     def _call_google(self, prompt: str) -> str:
         """Call Google Gemini API."""
