@@ -7,6 +7,9 @@ on:
 jobs:
   review:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -26,7 +29,9 @@ jobs:
 
       - name: Run AI Review
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+          # Use the default GITHUB_TOKEN provided by GitHub Actions
+          # This token automatically inherits the job's permissions
+          GITHUB_TOKEN: ${{ github.token }}
           # Add the required API key based on your config.yaml provider
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           # Other API keys if needed
