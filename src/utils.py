@@ -357,14 +357,22 @@ def post_line_comments(
         formatted_comment = {
             "path": comment["path"],
             "body": body,
-            "side": "RIGHT"  # Comment on the new version of the file
+            "side": "RIGHT",  # Comment on the new version of the file
+            "start_line": comment.get("line"),  # Start line for multi-line comments
+            "line": comment.get("line")  # End line (same as start for single-line)
         }
+        
+        # If this is a suggestion, format it properly
+        if suggestion_match:
+            suggestion_code = suggestion_match.group(1).strip()
+            formatted_comment["body"] = f"```suggestion\n{suggestion_code}\n```\n\n{body}"
         
         # Use position if available, otherwise use line number
         if "position" in comment:
             formatted_comment["position"] = comment["position"]
-        else:
-            formatted_comment["line"] = comment["line"]
+            # Remove line numbers if position is used
+            formatted_comment.pop("start_line", None)
+            formatted_comment.pop("line", None)
         
         formatted_comments.append(formatted_comment)
     

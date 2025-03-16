@@ -29,18 +29,10 @@ jobs:
 
       - name: Run AI Review
         env:
-          # Use the default GITHUB_TOKEN provided by GitHub Actions
-          # This token automatically inherits the job's permissions
           GITHUB_TOKEN: ${{ github.token }}
-          # Add the required API key based on your config.yaml provider
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          # Other API keys if needed
-          # OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          # GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-          # MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
-          # HUGGINGFACE_API_KEY: ${{ secrets.HUGGINGFACE_API_KEY }}
           GITHUB_EVENT_NUMBER: ${{ github.event.pull_request.number }}
-          # Set the Python path to include the current directory
+          GITHUB_REPOSITORY: ${{ github.repository }}
           PYTHONPATH: ${{ github.workspace }}
         run: |
           # Show current directory structure for debugging

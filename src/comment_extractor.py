@@ -252,7 +252,7 @@ class CommentExtractor:
             # Extract and validate comments
             comments = []
             
-            # Also look for file-specific sections with suggestions
+            # Look for file-specific sections with suggestions
             file_section_pattern = r'### ([^:\n]+):(\d+)\s*\n(.*?)(?=\n### |$)'
             for match in re.finditer(file_section_pattern, review_text, re.DOTALL):
                 file_path = match.group(1).strip()
@@ -261,7 +261,8 @@ class CommentExtractor:
                 
                 # Look for suggestion blocks in the section
                 suggestion_pattern = r'```suggestion\n(.*?)```'
-                if re.search(suggestion_pattern, section_content, re.DOTALL):
+                suggestion_match = re.search(suggestion_pattern, section_content, re.DOTALL)
+                if suggestion_match:
                     # Find the corresponding position in the diff
                     position = None
                     if file_path in file_line_map:
@@ -271,11 +272,28 @@ class CommentExtractor:
                                 break
                     
                     if position is not None:
+                        # Extract the problem description and explanation
+                        problem_pattern = r'Problem:\s*(.*?)(?=```suggestion|$)'
+                        explanation_pattern = r'Explanation:\s*(.*?)(?=\n### |$)'
+                        
+                        problem_match = re.search(problem_pattern, section_content, re.DOTALL)
+                        explanation_match = re.search(explanation_pattern, section_content, re.DOTALL)
+                        
+                        problem = problem_match.group(1).strip() if problem_match else ""
+                        explanation = explanation_match.group(1).strip() if explanation_match else ""
+                        
+                        # Format the comment body with proper structure
+                        comment_body = (
+                            f"{problem}\n\n"
+                            f"```suggestion\n{suggestion_match.group(1).strip()}\n```\n\n"
+                            f"{explanation}"
+                        ).strip()
+                        
                         comments.append({
                             "path": file_path,
                             "line": line_num,
                             "position": position,
-                            "body": section_content
+                            "body": comment_body
                         })
             
             # Process standard line comments
@@ -302,6 +320,28 @@ class CommentExtractor:
                         context={"file": file_path, "line": line_num}
                     )
                     continue
+                
+                # Check if the comment contains a suggestion
+                suggestion_pattern = r'```suggestion\n(.*?)```'
+                suggestion_match = re.search(suggestion_pattern, comment_text, re.DOTALL)
+                
+                if suggestion_match:
+                    # Extract problem and explanation if available
+                    problem_pattern = r'Problem:\s*(.*?)(?=```suggestion|$)'
+                    explanation_pattern = r'Explanation:\s*(.*?)(?=\n### |$)'
+                    
+                    problem_match = re.search(problem_pattern, comment_text, re.DOTALL)
+                    explanation_match = re.search(explanation_pattern, comment_text, re.DOTALL)
+                    
+                    problem = problem_match.group(1).strip() if problem_match else ""
+                    explanation = explanation_match.group(1).strip() if explanation_match else ""
+                    
+                    # Format the comment body with proper structure
+                    comment_text = (
+                        f"{problem}\n\n"
+                        f"```suggestion\n{suggestion_match.group(1).strip()}\n```\n\n"
+                        f"{explanation}"
+                    ).strip()
                 
                 comments.append({
                     "path": file_path,
