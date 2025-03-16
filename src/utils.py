@@ -32,15 +32,24 @@ def get_pr_diff(repo: str, pr_number: str, token: str) -> Optional[str]:
     """
     headers = {
         "Accept": "application/vnd.github.v3.diff",
-        "Authorization": f"token {token}"
+        "Authorization": f"Bearer {token}"
     }
-    url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}"
+    url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/files"
     
     try:
         logger.info(f"Fetching diff for PR #{pr_number} in {repo}")
         response = requests.get(url, headers=headers)
         response.raise_for_status()
-        return response.text
+        
+        # Extract patch content from each file
+        files = response.json()
+        diff_content = []
+        
+        for file in files:
+            if 'patch' in file:
+                diff_content.append(f"diff --git a/{file['filename']} b/{file['filename']}\n{file['patch']}")
+        
+        return '\n'.join(diff_content) if diff_content else None
     except requests.RequestException as e:
         logger.error(f"Failed to fetch PR diff: {e}")
         return None
@@ -48,7 +57,7 @@ def get_pr_diff(repo: str, pr_number: str, token: str) -> Optional[str]:
 
 def get_pr_files(repo: str, pr_number: str, token: str) -> List[Dict[str, Any]]:
     """
-    Get list of files changed in the PR.
+    Fetch the list of files changed in a pull request.
     
     Args:
         repo: Repository in the format 'owner/repo'
@@ -56,11 +65,11 @@ def get_pr_files(repo: str, pr_number: str, token: str) -> List[Dict[str, Any]]:
         token: GitHub token
         
     Returns:
-        List of files with their details
+        List of file information dictionaries
     """
     headers = {
         "Accept": "application/vnd.github.v3+json",
-        "Authorization": f"token {token}"
+        "Authorization": f"Bearer {token}"
     }
     url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/files"
     
@@ -85,33 +94,24 @@ def post_review_comment(repo: str, pr_number: str, token: str, review_text: str)
         review_text: The review text to post
         
     Returns:
-        True if the comment was posted successfully, False otherwise
+        True if successful, False otherwise
     """
     headers = {
         "Accept": "application/vnd.github.v3+json",
-        "Authorization": f"token {token}"
+        "Authorization": f"Bearer {token}"
     }
     url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews"
     
-    # Create a review with a distinct AI reviewer identity
     data = {
         "body": review_text,
-        "event": "COMMENT",
-        "committer": {
-            "name": "AI Code Reviewer",
-            "email": "ai-reviewer@visionprai.dev"
-        },
-        "author": {
-            "name": "AI Code Reviewer",
-            "email": "ai-reviewer@visionprai.dev"
-        }
+        "event": "COMMENT"
     }
     
     try:
-        # Don't log here, as this will be called from post_with_retry which already logs
+        logger.info(f"Posting review comment on PR #{pr_number} in {repo}")
         response = requests.post(url, headers=headers, json=data)
         response.raise_for_status()
-        return response.status_code == 201
+        return True
     except requests.RequestException as e:
         logger.error(f"Failed to post review comment: {e}")
         return False
@@ -329,55 +329,42 @@ def post_line_comments(
     comments: List[Dict[str, Any]]
 ) -> bool:
     """
-    Post line-specific comments on a pull request.
+    Post line-specific review comments on a pull request.
     
     Args:
         repo: Repository in the format 'owner/repo'
         pr_number: Pull request number
         token: GitHub token
-        comments: List of comments with file path, line number, and body
-                 Format: [{"path": "file.py", "line": 10, "body": "Comment text"}]
+        comments: List of comment dictionaries with 'path', 'line', and 'body' keys
         
     Returns:
-        True if the comments were posted successfully, False otherwise
+        True if successful, False otherwise
     """
-    if not comments:
-        return True
-        
     headers = {
         "Accept": "application/vnd.github.v3+json",
-        "Authorization": f"token {token}"
+        "Authorization": f"Bearer {token}"
     }
     url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews"
     
-    # Convert our simplified format to GitHub's format
-    gh_comments = []
+    # Format comments for the API
+    formatted_comments = []
     for comment in comments:
-        gh_comments.append({
+        formatted_comments.append({
             "path": comment["path"],
             "line": comment["line"],
             "body": comment["body"]
         })
     
-    # Create review data with AI reviewer identity
     data = {
-        "comments": gh_comments,
-        "event": "COMMENT",
-        "committer": {
-            "name": "AI Code Reviewer",
-            "email": "ai-reviewer@visionprai.dev"
-        },
-        "author": {
-            "name": "AI Code Reviewer",
-            "email": "ai-reviewer@visionprai.dev"
-        }
+        "comments": formatted_comments,
+        "event": "COMMENT"
     }
     
     try:
-        logger.info(f"Posting {len(comments)} line comments for PR #{pr_number} in {repo}")
+        logger.info(f"Posting {len(comments)} line comments on PR #{pr_number} in {repo}")
         response = requests.post(url, headers=headers, json=data)
         response.raise_for_status()
-        return response.status_code == 201
+        return True
     except requests.RequestException as e:
         logger.error(f"Failed to post line comments: {e}")
         return False
