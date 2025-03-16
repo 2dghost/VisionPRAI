@@ -236,9 +236,9 @@ def generate_prompt(diff: str, files: List[Dict[str, Any]], config: Dict[str, An
     # Create a comprehensive prompt
     prompt = (
         "You are an expert code reviewer following best practices. "
-        "Analyze this PR diff and provide feedback with concrete code improvements.\n"
+        "Analyze this PR diff and provide detailed, constructive feedback with concrete code improvements.\n"
         f"{focus_areas}\n\n"
-        "CRITICAL: For each issue, you MUST format your comments exactly like this:\n\n"
+        "CRITICAL: For each issue, you MUST format your line-specific comments exactly like this:\n\n"
         "### filename.ext:line_number\n"
         "Problem: <clear explanation of the issue>\n\n"
         "```suggestion\n"
@@ -270,13 +270,25 @@ def generate_prompt(diff: str, files: List[Dict[str, Any]], config: Dict[str, An
     # Format instructions
     prompt += (
         "Format your review as follows:\n\n"
-        "1. Start with a brief summary of the changes:\n"
-        "## Summary\n"
-        "Brief 2-3 sentence overview of the PR\n\n"
-        "2. Provide an overview of the changes:\n"
-        "## Overview of Changes\n"
-        "- Key change 1\n"
-        "- Key change 2\n\n"
+    )
+    
+    # Add conditional sections based on format configuration
+    if include_summary:
+        prompt += (
+            "1. Start with a brief summary of the changes:\n"
+            "## Summary\n"
+            "Brief 2-3 sentence overview of the PR\n\n"
+        )
+    
+    if include_overview:
+        prompt += (
+            "2. Provide an overview of the changes:\n"
+            "## Overview of Changes\n"
+            "- Key change 1\n"
+            "- Key change 2\n\n"
+        )
+    
+    prompt += (
         "3. For each file that needs improvements:\n"
         "### filename.ext:line_number\n"
         "Problem: <clear explanation>\n\n"
@@ -284,9 +296,19 @@ def generate_prompt(diff: str, files: List[Dict[str, Any]], config: Dict[str, An
         "<exact replacement code>\n"
         "```\n\n"
         "Explanation: <why this improves the code>\n\n"
-        "4. End with overall recommendations\n\n"
+    )
+    
+    if include_recommendations:
+        prompt += (
+            "4. End with overall recommendations:\n"
+            "## Recommendations\n"
+            "- Recommendation 1\n"
+            "- Recommendation 2\n\n"
+        )
+    
+    prompt += (
         "Remember:\n"
-        "- ALWAYS include specific line numbers\n"
+        "- ALWAYS include specific line numbers in the format 'filename.ext:line_number'\n"
         "- Make suggestions ONLY for lines in the diff\n"
         "- Each suggestion must be complete and valid code\n"
         "- If you find ANY issues, you MUST provide at least one code suggestion\n"
