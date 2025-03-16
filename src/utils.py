@@ -354,20 +354,18 @@ def post_line_comments(
         suggestion_pattern = r"```suggestion\n(.*?)```"
         suggestion_match = re.search(suggestion_pattern, body, re.DOTALL)
         
-        if suggestion_match:
-            suggestion_text = suggestion_match.group(1).strip()
-            # Format as GitHub suggestion
-            body = body.replace(
-                f"```suggestion\n{suggestion_match.group(1)}```",
-                f"```suggestion\n{suggestion_text}\n```"
-            )
-        
         formatted_comment = {
             "path": comment["path"],
             "body": body,
-            "line": comment.get("position", comment["line"]),  # Use position if available, fallback to line
             "side": "RIGHT"  # Comment on the new version of the file
         }
+        
+        # Use position if available, otherwise use line number
+        if "position" in comment:
+            formatted_comment["position"] = comment["position"]
+        else:
+            formatted_comment["line"] = comment["line"]
+        
         formatted_comments.append(formatted_comment)
     
     data = {

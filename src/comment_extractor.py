@@ -252,6 +252,33 @@ class CommentExtractor:
             # Extract and validate comments
             comments = []
             
+            # Also look for file-specific sections with suggestions
+            file_section_pattern = r'### ([^:\n]+):(\d+)\s*\n(.*?)(?=\n### |$)'
+            for match in re.finditer(file_section_pattern, review_text, re.DOTALL):
+                file_path = match.group(1).strip()
+                line_num = int(match.group(2))
+                section_content = match.group(3).strip()
+                
+                # Look for suggestion blocks in the section
+                suggestion_pattern = r'```suggestion\n(.*?)```'
+                if re.search(suggestion_pattern, section_content, re.DOTALL):
+                    # Find the corresponding position in the diff
+                    position = None
+                    if file_path in file_line_map:
+                        for line, pos, _ in file_line_map[file_path]:
+                            if line == line_num:
+                                position = pos
+                                break
+                    
+                    if position is not None:
+                        comments.append({
+                            "path": file_path,
+                            "line": line_num,
+                            "position": position,
+                            "body": section_content
+                        })
+            
+            # Process standard line comments
             for match in matches:
                 file_path = match["file"]
                 line_num = match["line"]
@@ -264,7 +291,7 @@ class CommentExtractor:
                 # Find the corresponding position in the diff
                 position = None
                 if file_path in file_line_map:
-                    for line, pos, context in file_line_map[file_path]:
+                    for line, pos, _ in file_line_map[file_path]:
                         if line == line_num:
                             position = pos
                             break
@@ -275,18 +302,6 @@ class CommentExtractor:
                         context={"file": file_path, "line": line_num}
                     )
                     continue
-                
-                # Extract any code suggestions
-                suggestion_pattern = r"```suggestion\n(.*?)```"
-                suggestion_match = re.search(suggestion_pattern, comment_text, re.DOTALL)
-                
-                if suggestion_match:
-                    # Ensure the suggestion has proper newlines
-                    suggestion_text = suggestion_match.group(1).strip()
-                    comment_text = comment_text.replace(
-                        f"```suggestion\n{suggestion_match.group(1)}```",
-                        f"```suggestion\n{suggestion_text}\n```"
-                    )
                 
                 comments.append({
                     "path": file_path,
