@@ -363,8 +363,10 @@ def post_line_comments(
         # Use position if available, otherwise use line number
         if "position" in comment:
             formatted_comment["position"] = comment["position"]
+            logger.debug(f"Using position {comment['position']} for comment on {comment['path']}")
         else:
             formatted_comment["line"] = comment["line"]
+            logger.debug(f"Using line {comment['line']} for comment on {comment['path']}")
         
         formatted_comments.append(formatted_comment)
     
@@ -376,6 +378,12 @@ def post_line_comments(
     try:
         logger.info(f"Posting {len(comments)} line comments on PR #{pr_number} in {repo}")
         response = requests.post(url, headers=headers, json=data)
+        
+        # Log response details for debugging
+        logger.debug(f"GitHub API response status: {response.status_code}")
+        if response.status_code >= 400:
+            logger.error(f"GitHub API error: {response.text}")
+            
         response.raise_for_status()
         return True
     except requests.RequestException as e:

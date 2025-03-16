@@ -259,24 +259,34 @@ class CommentExtractor:
                 line_num = int(match.group(2))
                 section_content = match.group(3).strip()
                 
-                # Look for suggestion blocks in the section
-                suggestion_pattern = r'```suggestion\n(.*?)```'
-                if re.search(suggestion_pattern, section_content, re.DOTALL):
-                    # Find the corresponding position in the diff
-                    position = None
-                    if file_path in file_line_map:
-                        for line, pos, _ in file_line_map[file_path]:
-                            if line == line_num:
-                                position = pos
-                                break
+                self.logger.debug(f"Found file section: {file_path}:{line_num}")
+                
+                # Check if the file and line exist in the diff
+                if not self.validate_file_path(file_path, file_line_map):
+                    self.logger.warning(f"File {file_path} not found in diff, skipping comment")
+                    continue
                     
-                    if position is not None:
-                        comments.append({
-                            "path": file_path,
-                            "line": line_num,
-                            "position": position,
-                            "body": section_content
-                        })
+                if not self.validate_line_number(file_path, line_num, file_line_map):
+                    self.logger.warning(f"Line {line_num} not found in {file_path} diff, skipping comment")
+                    continue
+                
+                # Find the corresponding position in the diff
+                position = None
+                for line, pos, _ in file_line_map[file_path]:
+                    if line == line_num:
+                        position = pos
+                        break
+                
+                if position is not None:
+                    comments.append({
+                        "path": file_path,
+                        "line": line_num,
+                        "position": position,
+                        "body": section_content
+                    })
+                    self.logger.debug(f"Added comment for {file_path}:{line_num} at position {position}")
+                else:
+                    self.logger.warning(f"Could not find position for {file_path}:{line_num}")
             
             # Process standard line comments
             for match in matches:
@@ -310,6 +320,7 @@ class CommentExtractor:
                     "body": comment_text
                 })
             
+            self.logger.info(f"Extracted {len(comments)} line comments total")
             return comments
             
         except Exception as e:

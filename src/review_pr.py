@@ -252,7 +252,9 @@ def generate_prompt(diff: str, files: List[Dict[str, Any]], config: Dict[str, An
         "3. The suggestion block must contain the complete fixed code\n"
         "4. After each suggestion, explain why your solution is better\n"
         "5. Make suggestions ONLY for lines that exist in the diff\n"
-        "6. If you find ANY issues, you MUST provide at least one code suggestion\n\n"
+        "6. If you find ANY issues, you MUST provide at least one code suggestion\n"
+        "7. IMPORTANT: Each file-specific comment MUST start with '### filename.ext:line_number' format\n"
+        "8. DO NOT use any other format for file-specific comments\n\n"
     )
     
     # Add cursor rules guidance if available
@@ -279,32 +281,31 @@ def generate_prompt(diff: str, files: List[Dict[str, Any]], config: Dict[str, An
     if include_summary:
         sections.append(
             "## Summary\n"
-            "Brief 2-3 sentence overview of the PR\n\n"
+            "Provide a concise summary of the PR, including its purpose and overall quality.\n"
         )
     
     if include_overview:
         sections.append(
             "## Overview of Changes\n"
-            "- Key change 1\n"
-            "- Key change 2\n\n"
+            "List the key changes and their impact. Highlight any architectural decisions.\n"
         )
     
-    # Always include the detailed feedback section
+    # Always include detailed feedback section
     sections.append(
         "## Detailed Feedback\n"
-        "### filename.ext:line_number\n"
-        "Problem: <clear explanation>\n\n"
-        "```suggestion\n"
-        "<exact replacement code>\n"
-        "```\n\n"
-        "Explanation: <why this improves the code>\n\n"
+        "Provide detailed analysis of the code changes. Include specific issues and recommendations.\n"
+    )
+    
+    # Add a dedicated section for file-specific comments
+    sections.append(
+        "## File-Specific Comments\n"
+        "Include all line-specific comments here, using the exact format specified above (### filename.ext:line_number).\n"
     )
     
     if include_recommendations:
         sections.append(
             "## Recommendations\n"
-            "- Recommendation 1\n"
-            "- Recommendation 2\n\n"
+            "Summarize your key recommendations for improving the PR.\n"
         )
     
     # Add numbered sections to the prompt
@@ -504,6 +505,16 @@ def review_pr(config_path: Optional[str] = None, verbose: bool = False) -> bool:
                 # If no Detailed Feedback section, use the whole review text
                 detailed_feedback_text = review_text
                 logger.warning("No Detailed Feedback section found, using entire review text")
+                
+            # Also check for a File-Specific Comments section
+            file_comments_pattern = r'(?:^|\n)## File-Specific Comments\s*\n(.*?)(?=\n##|\Z)'
+            file_comments_match = re.search(file_comments_pattern, review_text, re.DOTALL)
+            
+            if file_comments_match:
+                file_comments_text = file_comments_match.group(1).strip()
+                logger.debug("File-Specific Comments section found")
+                # Append to detailed feedback text
+                detailed_feedback_text += "\n\n" + file_comments_text
             
             # Extract file-specific comments
             file_section_pattern = r'(?:^|\n)### ([^\n:]+):(\d+)\s*\n(.*?)(?=\n### [^\n:]+:\d+|\Z)'
@@ -521,16 +532,17 @@ def review_pr(config_path: Optional[str] = None, verbose: bool = False) -> bool:
                 if filename in file_line_map:
                     # Find the matching position for this line number
                     matching_lines = [
-                        (line_num, pos, content) 
-                        for line_num, pos, content in file_line_map[filename] 
+                        (line_num, pos, line_content) 
+                        for line_num, pos, line_content in file_line_map[filename] 
                         if line_num == line_number
                     ]
                     if matching_lines:
                         # Use the first matching position
                         _, position, _ = matching_lines[0]
-                        file_sections[filename] = {
+                        file_sections[f"{filename}:{line_number}"] = {
                             "path": filename,
-                            "line": position,  # Use position instead of line number
+                            "line": line_number,
+                            "position": position,  # Store position separately from line number
                             "body": content
                         }
                         logger.debug(f"Added file section for {filename}:{line_number} at position {position}")
