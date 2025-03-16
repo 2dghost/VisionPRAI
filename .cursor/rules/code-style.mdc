@@ -1,1 +1,59 @@
- 
+---
+description: 
+globs: 
+alwaysApply: true
+---
+ # Python Code Style Guidelines
+
+Follow these Python code style guidelines when working with this codebase:
+
+## Style Guide
+- Follow PEP 8 style guide
+- Use 4 spaces for indentation (no tabs)
+- Maximum line length of 88 characters (Black formatter standard)
+- Use meaningful variable and function names
+
+## Code Organization
+- Keep functions small and focused on a single responsibility
+- Follow SOLID principles
+- Use context managers for resource management
+- Organize imports in three groups:
+  1. Standard library imports
+  2. Third-party imports
+  3. Local application imports
+
+## Type Safety
+- Use type hints for all function parameters and return types
+- Use Optional[] for nullable values
+- Use Union[] for multiple possible types
+- Use TypeVar for generic types
+
+## Error Handling
+- Use specific exception types
+- Handle exceptions at appropriate levels
+- Add context to exceptions using `raise ... from`
+- Document expected exceptions in docstrings
+
+## Documentation
+- Document public APIs and complex logic
+- Use Google-style docstrings
+- Include examples in docstrings for complex functions
+- Keep comments up to date with code changes
+
+## Additional Tools
+- Use Black formatter with 88 character line length
+- Use isort with Black profile for import sorting
+- Use flake8 for linting
+- Use mypy with strict type checking:
+  - disallow_untyped_defs = true
+  - disallow_incomplete_defs = true
+  - warn_return_any = true
+
+## Testing
+- Write tests using pytest
+- Use pytest-cov for coverage reporting
+- Use pytest-mock for mocking
+- Name test files as test_*.py
+- Name test functions as test_*
+
+@src/**/*.py

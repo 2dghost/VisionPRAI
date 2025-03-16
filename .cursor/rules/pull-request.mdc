@@ -1,1 +1,69 @@
- 
+---
+description: 
+globs: 
+alwaysApply: true
+---
+# Pull Request Guidelines
+
+Follow these guidelines when creating and reviewing pull requests.
+
+## Branch Naming
+- `feature/[feature-name]` for new features
+- `fix/[issue-number]-[brief-description]` for bug fixes
+- `refactor/[scope]` for code refactoring
+- `docs/[scope]` for documentation updates
+
+## PR Title Format
+```
+type(scope): brief description
+```
+
+Types:
+- `feat`: New feature
+- `fix`: Bug fix
+- `docs`: Documentation changes
+- `style`: Code style changes
+- `refactor`: Code refactoring
+- `test`: Adding missing tests
+- `chore`: Maintenance tasks
+
+## PR Description Requirements
+Your PR description must include:
+1. Summary of changes
+2. Related issue numbers
+3. Breaking changes (if any)
+4. Testing performed
+5. Code review checklist completed
+
+## Code Review Requirements
+- [ ] All tests pass
+- [ ] No merge conflicts
+- [ ] Code follows style guidelines
+- [ ] Documentation is updated
+- [ ] Changes are atomic and focused
+- [ ] AI PR Review completed successfully
+
+## Review Process
+1. Submit PR
+2. Wait for AI PR Review
+3. Address AI feedback
+4. Request human review
+5. Address reviewer comments
+6. Get approval
+7. Merge
+
+## CI Requirements
+- All CI checks must pass:
+  - pytest (unit tests)
+  - black (formatting)
+  - isort (import sorting)
+  - flake8 (linting)
+  - mypy (type checking)
+  - pytest-cov (coverage)
+
+## Version Control
+- Follow semantic versioning
+- Keep commit messages clear and descriptive
+- Reference issue numbers in commits when applicable
+
+@**/* 

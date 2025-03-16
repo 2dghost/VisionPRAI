@@ -1,6 +1,147 @@
 ---
 description: 
 globs: 
-alwaysApply: false
+alwaysApply: true
 ---
- 
+# MCP Tools Guide
+
+This guide documents the MCP (Mission Control Protocol) tools available in this project.
+
+## GitHub Integration Tools
+
+### Repository Management
+- Create/update repositories
+- Fork repositories
+- Create branches
+- Push files
+- Search repositories
+
+Example usage patterns:
+```python
+# Creating a new repository
+await mcp.github.create_repository(
+    name="my-repo",
+    description="Project description",
+    private=False
+)
+
+# Pushing files
+await mcp.github.push_files(
+    owner="username",
+    repo="repo-name",
+    branch="main",
+    files=[{"path": "file.txt", "content": "content"}],
+    message="commit message"
+)
+```
+
+### Pull Request Management
+- Create pull requests
+- Update pull requests
+- Add comments
+- Review changes
+
+Example usage patterns:
+```python
+# Creating a PR
+await mcp.github.create_pull_request(
+    owner="username",
+    repo="repo-name",
+    title="feat: new feature",
+    head="feature-branch",
+    base="main",
+    body="PR description"
+)
+```
+
+## UI Component Tools
+
+### 21st Dev Magic
+- Component builder for modern UI elements
+- Logo search and integration
+- Component inspiration and previews
+
+Example usage patterns:
+```python
+# Getting a UI component
+component = await mcp.magic.get_component(
+    message="Create a responsive navigation bar",
+    searchQuery="navbar responsive"
+)
+
+# Searching for logos
+logos = await mcp.logo.search(
+    queries=["github", "discord"],
+    format="TSX"
+)
+```
+
+## Knowledge Graph Tools
+
+### Graph Management
+- Create/update entities
+- Create/update relations
+- Add observations
+- Search nodes
+- Read graph data
+
+Example usage patterns:
+```python
+# Creating entities
+await mcp.knowledge.create_entities([{
+    "name": "User",
+    "entityType": "Class",
+    "observations": ["Represents a system user"]
+}])
+
+# Creating relations
+await mcp.knowledge.create_relations([{
+    "from": "User",
+    "to": "Profile",
+    "relationType": "has_one"
+}])
+```
+
+## Web Automation Tools
+
+### Playwright Integration
+- Navigate web pages
+- Get page content
+- Interact with elements
+- Mouse and keyboard control
+
+Example usage patterns:
+```python
+# Navigating to a page
+await mcp.playwright.navigate(url="https://example.com")
+
+# Getting visible content
+content = await mcp.playwright.get_visible_content(
+    minVisiblePercentage=50
+)
+```
+
+## Best Practices
+
+1. Error Handling
+   - Always handle potential errors from MCP tools
+   - Use try-catch blocks for critical operations
+   - Log errors appropriately
+
+2. Authentication
+   - Keep API keys and tokens secure
+   - Use environment variables for sensitive data
+   - Rotate credentials regularly
+
+3. Rate Limiting
+   - Be mindful of API rate limits
+   - Implement backoff strategies
+   - Cache responses when appropriate
+
+4. Documentation
+   - Document tool usage in code
+   - Keep examples up to date
+   - Share successful patterns
+
+@src/**/*.{py,ts,tsx,js,jsx}
+@tests/**/*.{py,ts,tsx,js,jsx}

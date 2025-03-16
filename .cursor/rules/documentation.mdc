@@ -1,1 +1,76 @@
- 
+---
+description: 
+globs: 
+alwaysApply: true
+---
+# Documentation Guidelines
+
+Follow these guidelines for documenting code in this project.
+
+## Module Documentation
+Every Python module should have:
+- Module docstring explaining purpose
+- Copyright notice if applicable
+- List of exports/public API
+- Usage examples if appropriate
+
+## Function Documentation
+Use Google-style docstrings:
+```python
+def function_name(param1: type1, param2: type2) -> return_type:
+    """Short description of function.
+
+    Detailed description of function behavior.
+
+    Args:
+        param1: Description of param1
+        param2: Description of param2
+
+    Returns:
+        Description of return value
+
+    Raises:
+        ExceptionType: When and why this exception occurs
+
+    Examples:
+        >>> function_name(1, "test")
+        Expected output
+    """
+```
+
+## Class Documentation
+Document:
+- Class purpose and behavior
+- Important attributes
+- Public methods
+- Usage examples
+- Any subclassing notes
+
+## Code Comments
+- Add inline comments for complex algorithms
+- Explain "why" not "what"
+- Keep comments up to date
+- Document assumptions and limitations
+- Mark TODOs with assignee and issue number
+
+## API Documentation
+For public APIs:
+- Document all parameters
+- Include type information
+- Provide usage examples
+- Note deprecation warnings
+- Document version changes
+
+## Project Documentation
+- Use MkDocs with Material theme
+- Place documentation in `docs/` directory
+- Include API reference documentation
+- Document configuration options
+- Keep README.md up to date with:
+  - Project overview
+  - Installation instructions
+  - Usage examples
+  - Development setup
+
+@src/**/*.py
+@tests/**/*.py 
