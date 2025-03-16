@@ -12,6 +12,7 @@ import logging
 import re
 import yaml
 from typing import Dict, List, Optional, Any, Tuple
+import time
 
 import sys
 import os
@@ -426,7 +427,8 @@ def review_pr(config_path: Optional[str] = None, verbose: bool = False) -> bool:
     recommendations_match = re.search(recommendations_pattern, review_text, re.DOTALL)
     
     # Log the review text for debugging
-    logger.debug(f"Review text received: {review_text[:500]}...")
+    logger.debug(f"Review text received (first 1000 chars): {review_text[:1000]}...")
+    logger.debug(f"Review text received (last 1000 chars): {review_text[-1000:]}...")
     
     overview_text = "# AI Review Summary\n\n"
     
@@ -435,12 +437,16 @@ def review_pr(config_path: Optional[str] = None, verbose: bool = False) -> bool:
         logger.debug("Summary section found and extracted")
     else:
         logger.warning("No summary section found in the review text")
+        # Add a fallback summary if none was found
+        overview_text += "## Summary\nThis PR contains code changes that have been reviewed by the AI.\n\n"
     
     if overview_match:
         overview_text += f"## Overview of Changes\n{overview_match.group(1).strip()}\n\n"
         logger.debug("Overview section found and extracted")
     else:
         logger.warning("No overview section found in the review text")
+        # Add a fallback overview if none was found
+        overview_text += "## Overview of Changes\n- Code changes were analyzed\n- See detailed comments for specific feedback\n\n"
     
     if recommendations_match:
         overview_text += f"## Recommendations\n{recommendations_match.group(1).strip()}\n\n"
@@ -449,10 +455,23 @@ def review_pr(config_path: Optional[str] = None, verbose: bool = False) -> bool:
     # Add a note about code-specific comments
     overview_text += "\n\n> Detailed feedback has been added as review comments on specific code lines."
     
-    overview_success = post_review_comment(repo, pr_number, github_token, overview_text)
-    if not overview_success:
-        logger.error("Failed to post overview comment")
-        # Continue anyway to post line comments
+    # Try to post the overview comment
+    try:
+        logger.info("Attempting to post overview comment")
+        overview_success = post_review_comment(repo, pr_number, github_token, overview_text)
+        if not overview_success:
+            logger.error("Failed to post overview comment - API call returned False")
+            # Try an alternative approach - post a simpler comment
+            simple_overview = "# AI Review\n\nThe AI has reviewed this PR. See the detailed comments for feedback."
+            logger.info("Attempting to post simplified overview comment")
+            simple_success = post_review_comment(repo, pr_number, github_token, simple_overview)
+            if not simple_success:
+                logger.error("Failed to post simplified overview comment")
+        else:
+            logger.info("Successfully posted overview comment")
+    except Exception as e:
+        logger.error(f"Exception while posting overview comment: {str(e)}", exc_info=True)
+        # Continue anyway to try posting line comments
     
     # Check if we should post line-specific comments
     line_comments_enabled = config.get("review", {}).get("line_comments", True)
@@ -467,6 +486,7 @@ def review_pr(config_path: Optional[str] = None, verbose: bool = False) -> bool:
             # First use the standard extractor for explicitly marked line comments
             comment_extractor = CommentExtractor(config_path=config_path or "config.yaml")
             standard_line_comments = comment_extractor.extract_line_comments(review_text, file_line_map)
+            logger.debug(f"Extracted {len(standard_line_comments)} standard line comments")
             
             # Now extract file-specific sections and convert them to line comments for each file
             file_sections = {}
@@ -488,10 +508,15 @@ def review_pr(config_path: Optional[str] = None, verbose: bool = False) -> bool:
             # Extract file-specific comments
             file_section_pattern = r'(?:^|\n)### ([^\n:]+):(\d+)\s*\n(.*?)(?=\n### [^\n:]+:\d+|\Z)'
             
-            for match in re.finditer(file_section_pattern, detailed_feedback_text, re.DOTALL):
+            file_section_matches = list(re.finditer(file_section_pattern, detailed_feedback_text, re.DOTALL))
+            logger.debug(f"Found {len(file_section_matches)} file section matches")
+            
+            for match in file_section_matches:
                 filename = match.group(1).strip()
                 line_number = int(match.group(2))
                 content = match.group(3).strip()
+                
+                logger.debug(f"Processing file section match: {filename}:{line_number}")
                 
                 if filename in file_line_map:
                     # Find the matching position for this line number
@@ -508,9 +533,15 @@ def review_pr(config_path: Optional[str] = None, verbose: bool = False) -> bool:
                             "line": position,  # Use position instead of line number
                             "body": content
                         }
+                        logger.debug(f"Added file section for {filename}:{line_number} at position {position}")
+                    else:
+                        logger.warning(f"No matching position found for {filename}:{line_number}")
+                else:
+                    logger.warning(f"File {filename} not found in file_line_map")
             
             # Convert file sections to line comments 
             additional_comments = list(file_sections.values())
+            logger.debug(f"Added {len(additional_comments)} additional comments from file sections")
             
             # Combine standard and file-section comments
             all_comments = standard_line_comments + additional_comments
@@ -519,11 +550,26 @@ def review_pr(config_path: Optional[str] = None, verbose: bool = False) -> bool:
             if all_comments:
                 logger.info(f"Posting {len(all_comments)} line-specific comments",
                            context={"comments_count": len(all_comments)})
-                line_comment_success = post_line_comments(repo, pr_number, github_token, all_comments)
-                if not line_comment_success:
-                    logger.error("Failed to post line comments",
-                                context={"repo": repo, "pr_number": pr_number})
-                    # Continue despite failure to post line comments
+                try:
+                    line_comment_success = post_line_comments(repo, pr_number, github_token, all_comments)
+                    if not line_comment_success:
+                        logger.error("Failed to post line comments - API call returned False",
+                                    context={"repo": repo, "pr_number": pr_number})
+                        # Try posting comments one by one as a fallback
+                        logger.info("Attempting to post comments one by one")
+                        for i, comment in enumerate(all_comments):
+                            try:
+                                single_success = post_line_comments(repo, pr_number, github_token, [comment])
+                                if single_success:
+                                    logger.info(f"Successfully posted comment {i+1}/{len(all_comments)}")
+                                else:
+                                    logger.error(f"Failed to post comment {i+1}/{len(all_comments)}")
+                                # Add a delay to avoid rate limits
+                                time.sleep(2)
+                            except Exception as e:
+                                logger.error(f"Error posting comment {i+1}: {str(e)}")
+                except Exception as e:
+                    logger.error(f"Exception while posting line comments: {str(e)}", exc_info=True)
             else:
                 logger.info("No line-specific comments found in the review",
                            context={"repo": repo, "pr_number": pr_number})

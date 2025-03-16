@@ -7,6 +7,7 @@ import os
 import json
 import requests
 from typing import Dict, Any, Optional
+import logging
 
 
 class ModelAdapter:
@@ -118,8 +119,9 @@ class ModelAdapter:
         # Handle Claude 3 response format
         response_json = response.json()
         
-        # Debug the response structure
-        print(f"Response keys: {response_json.keys()}")
+        # Use proper logging instead of print
+        logger = logging.getLogger("ai-pr-reviewer")
+        logger.debug(f"Anthropic response keys: {list(response_json.keys())}")
         
         # Claude 3 format (messages API)
         if "content" in response_json:
@@ -136,25 +138,58 @@ class ModelAdapter:
                             text_parts.append(item["value"])
                 
                 if text_parts:
-                    return "\n".join(text_parts)
+                    result = "\n".join(text_parts)
+                    logger.debug(f"Extracted text from content list: {result[:100]}...")
+                    return result
         
         # Try direct content access
         if "content" in response_json and len(response_json["content"]) > 0:
             content_item = response_json["content"][0]
             if isinstance(content_item, dict):
                 if "text" in content_item:
-                    return content_item["text"]
+                    result = content_item["text"]
+                    logger.debug(f"Extracted text from content[0].text: {result[:100]}...")
+                    return result
                 elif "value" in content_item:
-                    return content_item["value"]
+                    result = content_item["value"]
+                    logger.debug(f"Extracted text from content[0].value: {result[:100]}...")
+                    return result
         
         # Legacy format
         if "completion" in response_json:
-            return response_json["completion"]
+            result = response_json["completion"]
+            logger.debug(f"Extracted text from completion: {result[:100]}...")
+            return result
+        
+        # Try to extract from the 'message' field if it exists
+        if "message" in response_json:
+            message = response_json["message"]
+            if isinstance(message, dict) and "content" in message:
+                if isinstance(message["content"], list):
+                    text_parts = []
+                    for item in message["content"]:
+                        if isinstance(item, dict) and "text" in item:
+                            text_parts.append(item["text"])
+                    if text_parts:
+                        result = "\n".join(text_parts)
+                        logger.debug(f"Extracted text from message.content: {result[:100]}...")
+                        return result
+                elif isinstance(message["content"], str):
+                    result = message["content"]
+                    logger.debug(f"Extracted text from message.content string: {result[:100]}...")
+                    return result
         
         # Last resort: try to extract any text we can find
         try:
-            return str(response_json)
-        except:
+            # Log the full response for debugging
+            logger.error(f"Could not extract text using standard methods. Full response: {response_json}")
+            
+            # Try to convert to string as a last resort
+            result = str(response_json)
+            logger.debug(f"Converted full response to string: {result[:100]}...")
+            return result
+        except Exception as e:
+            logger.error(f"Error converting response to string: {str(e)}")
             raise RuntimeError(f"Unexpected Anthropic API response format: {response_json}")
 
     def _call_google(self, prompt: str) -> str:
