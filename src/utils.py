@@ -243,26 +243,58 @@ def create_review_with_individual_comments(repo, pr_number, token, comments, com
         logger.error(f"Error creating empty review: {str(e)}")
         return False
     
+    # Get file patches for position calculation
+    try:
+        files_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/files"
+        files_response = requests.get(files_url, headers=headers)
+        files_response.raise_for_status()
+        files = files_response.json()
+        
+        # Map files to their patches
+        file_patches = {file["filename"]: file.get("patch", "") for file in files}
+        logger.debug(f"Found {len(files)} files in PR for position calculation")
+    except Exception as e:
+        logger.error(f"Failed to get file patches: {str(e)}")
+        # Continue anyway - we'll use line numbers directly if needed
+        file_patches = {}
+    
     # Add comments to the review one by one
     comments_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews/{review_id}/comments"
     success = True
     
     for i, comment in enumerate(comments):
         try:
-            # Each comment needs the commit_id
+            path = comment["path"]
+            line_num = int(comment.get("line", 1))
+            position = None
+            
+            # Try to get position from patch if needed
+            if "position" in comment:
+                position = comment["position"]
+            elif path in file_patches:
+                position = calculate_position_in_diff(file_patches[path], line_num)
+                logger.debug(f"Calculated position {position} for {path}:{line_num}")
+            
+            # Each comment needs the correct parameters
             comment_data = {
-                "path": comment["path"],
+                "path": path,
                 "body": comment["body"],
-                "line": comment["line"],
-                "side": comment["side"]
+                "side": "RIGHT"  # Always comment on the right side (new version)
             }
+            
+            # Use position if available, otherwise line (though line might not work)
+            if position is not None:
+                comment_data["position"] = position
+            else:
+                comment_data["line"] = line_num
+                logger.warning(f"Using line instead of position for {path}:{line_num}")
             
             # Add optional fields if present
             if "start_line" in comment:
-                comment_data["start_line"] = comment["start_line"]
+                comment_data["start_line"] = int(comment["start_line"])
                 comment_data["start_side"] = comment.get("start_side", "RIGHT")
             
-            logger.debug(f"Adding comment {i+1}/{len(comments)}: {comment['path']}:{comment['line']}")
+            logger.debug(f"Adding comment {i+1}/{len(comments)}: {path}:{line_num}")
             
             comment_response = requests.post(comments_url, headers=headers, json=comment_data)
             
@@ -541,19 +573,13 @@ def post_review_with_comments(repo: str, pr_number: str, token: str, comments: L
                 "path": path,
                 "position": position,
                 "body": comment["body"],
-                "line": line_num,  # Include the actual line number for clarity
                 "side": "RIGHT"    # Always comment on the right side (new version)
             }
-            
-            # Remove the line number from the API request - GitHub uses position only
-            if "line" in review_comment:
-                del review_comment["line"]
                 
             # Handle multi-line comments if present
             if "start_line" in comment:
                 review_comment["start_line"] = int(comment["start_line"])
                 review_comment["start_side"] = comment.get("start_side", "RIGHT")
-                review_comment["side"] = comment.get("side", "RIGHT")
             
             review_comments.append(review_comment)
             logger.debug(f"Added comment for {path}:{line_num} at position {position}")
@@ -568,41 +594,9 @@ def post_review_with_comments(repo: str, pr_number: str, token: str, comments: L
             combined_text += "\n\n" + "\n\n".join([f"**{c['path']}:{c['line']}**\n{c['body']}" for c in comments])
         return post_review_comment(repo, pr_number, token, combined_text)
     
-    # Create the review with all comments
-    try:
-        review_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews"
-        
-        # Log the full request for debugging
-        review_data = {
-            "commit_id": latest_commit_sha,
-            "body": overview_text,
-            "event": "COMMENT",
-            "comments": review_comments
-        }
-        
-        # Log the entire review data for debugging
-        logger.info(f"Creating review with {len(review_comments)} comments")
-        logger.debug(f"Review data: {json.dumps(review_data)}")
-        
-        response = requests.post(review_url, headers=headers, json=review_data)
-        
-        # Log full response for debugging
-        logger.debug(f"Response status: {response.status_code}")
-        logger.debug(f"Response body: {response.text}")
-        
-        if response.status_code >= 400:
-            error_body = response.text
-            logger.error(f"Failed to create review: HTTP {response.status_code}: {error_body}")
-            
-            # Try an alternative approach - creating a draft review first
-            logger.info("Trying alternative approach with draft review")
-            return create_review_with_individual_comments(repo, pr_number, token, comments, latest_commit_sha)
-        
-        logger.info(f"Successfully created review with {len(review_comments)} comments")
-        return True
-    except Exception as e:
-        logger.error(f"Error creating review: {str(e)}")
-        return False
+    # Use the draft review approach (Method 2) which is more reliable
+    logger.info("Using draft review approach for posting comments")
+    return create_review_with_individual_comments(repo, pr_number, token, comments, latest_commit_sha)
 
 
 def test_github_review_methods(repo: str, pr_number: str, token: str, test_text: str = "Test comment") -> bool:

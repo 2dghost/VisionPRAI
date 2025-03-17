@@ -39,7 +39,7 @@ def main():
     parser = argparse.ArgumentParser(description="Test GitHub PR review comment API")
     parser.add_argument("--repo", help="Repository in owner/repo format")
     parser.add_argument("--pr", help="PR number to test")
-    parser.add_argument("--token", help="GitHub token (or set GITHUB_TOKEN env var)")
+    parser.add_argument("--token", help="GitHub token (or set GH_TOKEN env var)")
     parser.add_argument("--method", choices=["all", "test", "review"], default="all", 
                          help="Test method (all, test, review)")
     args = parser.parse_args()
@@ -48,9 +48,9 @@ def main():
     load_dotenv()
     
     # Get GitHub token
-    token = args.token or os.environ.get("GITHUB_TOKEN")
+    token = args.token or os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
     if not token:
-        logger.error("No GitHub token provided. Use --token or set GITHUB_TOKEN env var")
+        logger.error("No GitHub token provided. Use --token or set GH_TOKEN env var")
         return 1
     
     # Get repo and PR number
