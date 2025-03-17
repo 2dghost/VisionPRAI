@@ -289,52 +289,32 @@ class CommentExtractor:
                         position = pos
                         break
                 
+                # Always include the line and side parameters, and optionally include position as a fallback
+                comment_data = {
+                    "path": file_path,
+                    "line": line_num,
+                    "side": "RIGHT",  # Always comment on the new version
+                    "body": content
+                }
+                
+                # Add position as a fallback but prefer line and side
                 if position is not None:
-                    # Check if the content contains a suggestion block
-                    suggestion_pattern = r'```suggestion\n(.*?)```'
-                    has_suggestion = re.search(suggestion_pattern, content, re.DOTALL)
-                    
-                    # If there's no suggestion block but there is a code block, convert it to a suggestion
-                    if not has_suggestion:
-                        code_block_pattern = r'```(?:\w+)?\n(.*?)```'
-                        code_block_match = re.search(code_block_pattern, content, re.DOTALL)
-                        if code_block_match:
-                            code_block = code_block_match.group(1).strip()
-                            # Replace the code block with a suggestion block
-                            content = content.replace(
-                                code_block_match.group(0),
-                                f"```suggestion\n{code_block}\n```"
-                            )
-                            self.logger.info(f"Converted code block to suggestion for {file_path}:{line_num}")
-                    
-                    # Create the comment with both line and position for API flexibility
-                    comment_data = {
-                        "path": file_path,
-                        "line": line_num,
-                        "side": "RIGHT",  # Always comment on the new version
-                        "body": content
-                    }
-                    
-                    # Include position as a fallback for older API versions
-                    if position is not None:
-                        comment_data["position"] = position
-                    
-                    comments.append(comment_data)
-                    self.logger.debug(f"Added comment for {file_path}:{line_num} at position {position}")
-                else:
+                    comment_data["position"] = position
+                
+                comments.append(comment_data)
+                self.logger.debug(f"Added comment for {file_path}:{line_num}" + 
+                                 (f" at position {position}" if position else ""))
+                
+                # Process fallback for when position can't be found
+                if position is None:
                     self.logger.warning(f"Could not find position for {file_path}:{line_num}, trying closest line")
                     # Try to find the closest line number
                     if file_line_map[file_path]:
                         closest_line = min(file_line_map[file_path], key=lambda x: abs(x[0] - line_num))
                         closest_line_num, closest_pos, _ = closest_line
-                        self.logger.info(f"Using closest line {closest_line_num} at position {closest_pos}")
-                        comments.append({
-                            "path": file_path,
-                            "line": closest_line_num,
-                            "side": "RIGHT",
-                            "position": closest_pos,
-                            "body": f"[Originally for line {line_num}] {content}"
-                        })
+                        self.logger.info(f"Using closest line {closest_line_num} as fallback")
+                        # We'll still try the original line number but note the position mismatch
+                        comments[-1]["position"] = closest_pos
             
             # Try alternative patterns if we didn't find enough primary matches
             if len(primary_matches) < 3:
@@ -378,35 +358,32 @@ class CommentExtractor:
                                 position = pos
                                 break
                         
+                        # Always include the line and side parameters
+                        comment_data = {
+                            "path": file_path,
+                            "line": line_num,
+                            "side": "RIGHT",
+                            "body": content
+                        }
+                        
+                        # Add position as a fallback
                         if position is not None:
-                            # Create the comment with both line and position for API flexibility
-                            comment_data = {
-                                "path": file_path,
-                                "line": line_num,
-                                "side": "RIGHT",
-                                "body": content
-                            }
-                            
-                            # Include position as a fallback for older API versions
-                            if position is not None:
-                                comment_data["position"] = position
+                            comment_data["position"] = position
                                 
-                            comments.append(comment_data)
-                            self.logger.debug(f"Added comment for {file_path}:{line_num} at position {position}")
-                        else:
+                        comments.append(comment_data)
+                        self.logger.debug(f"Added comment for {file_path}:{line_num}" + 
+                                         (f" at position {position}" if position else ""))
+                        
+                        # Process fallback for when position can't be found
+                        if position is None:
                             self.logger.warning(f"Could not find position for {file_path}:{line_num}, trying closest line")
                             # Try to find the closest line number
                             if file_line_map[file_path]:
                                 closest_line = min(file_line_map[file_path], key=lambda x: abs(x[0] - line_num))
                                 closest_line_num, closest_pos, _ = closest_line
-                                self.logger.info(f"Using closest line {closest_line_num} at position {closest_pos}")
-                                comments.append({
-                                    "path": file_path,
-                                    "line": closest_line_num,
-                                    "side": "RIGHT",
-                                    "position": closest_pos,
-                                    "body": f"[Originally for line {line_num}] {content}"
-                                })
+                                self.logger.info(f"Using closest line {closest_line_num} as fallback")
+                                # We'll still try the original line number but note the position mismatch
+                                comments[-1]["position"] = closest_pos
             
             # Process standard pattern matches
             for match in matches:
@@ -440,35 +417,56 @@ class CommentExtractor:
                         position = pos
                         break
                 
+                # Always include the line and side parameters
+                comment_data = {
+                    "path": file_path,
+                    "line": line_num,
+                    "side": "RIGHT",
+                    "body": comment_text
+                }
+                
+                # Add position as a fallback
                 if position is not None:
-                    # Create the comment with both line and position for API flexibility
-                    comment_data = {
-                        "path": file_path,
-                        "line": line_num,
-                        "side": "RIGHT",
-                        "body": comment_text
-                    }
+                    comment_data["position"] = position
                     
-                    # Include position as a fallback for older API versions
-                    if position is not None:
-                        comment_data["position"] = position
-                        
-                    comments.append(comment_data)
-                    self.logger.debug(f"Added comment for {file_path}:{line_num} at position {position}")
-                else:
+                comments.append(comment_data)
+                self.logger.debug(f"Added comment for {file_path}:{line_num}" + 
+                                 (f" at position {position}" if position else ""))
+                
+                # Process fallback for when position can't be found
+                if position is None:
                     self.logger.warning(f"Could not find position for {file_path}:{line_num}, trying closest line")
                     # Try to find the closest line number
                     if file_line_map[file_path]:
                         closest_line = min(file_line_map[file_path], key=lambda x: abs(x[0] - line_num))
                         closest_line_num, closest_pos, _ = closest_line
-                        self.logger.info(f"Using closest line {closest_line_num} at position {closest_pos}")
-                        comments.append({
-                            "path": file_path,
-                            "line": closest_line_num,
-                            "side": "RIGHT",
-                            "position": closest_pos,
-                            "body": f"[Originally for line {line_num}] {comment_text}"
-                        })
+                        self.logger.info(f"Using closest line {closest_line_num} as fallback")
+                        # We'll still try the original line number but note the position mismatch
+                        comments[-1]["position"] = closest_pos
+            
+            # Final check to ensure all comments have required fields
+            for comment in comments:
+                # Ensure line is an integer 
+                if "line" in comment:
+                    comment["line"] = int(comment["line"])
+                else:
+                    # If no line field, add it from position mapping if possible
+                    if "path" in comment and "position" in comment:
+                        for file_path, lines in file_line_map.items():
+                            if file_path == comment["path"]:
+                                matching_position = [line for line, pos, _ in lines if pos == comment["position"]]
+                                if matching_position:
+                                    comment["line"] = matching_position[0]
+                                    comment["side"] = "RIGHT"
+                                    break
+                
+                # Ensure side is specified
+                if "line" in comment and "side" not in comment:
+                    comment["side"] = "RIGHT"
+                
+                # For multi-line comments, ensure start_side is set if start_line is present
+                if "start_line" in comment and "start_side" not in comment:
+                    comment["start_side"] = "RIGHT"
             
             self.logger.info(f"Extracted {len(comments)} line-specific comments")
             return comments

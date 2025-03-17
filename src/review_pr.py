@@ -620,14 +620,37 @@ def review_pr(config_path: Optional[str] = None, verbose: bool = False) -> bool:
                         # Make sure line is an integer
                         if "line" in comment:
                             comment["line"] = int(comment["line"])
+                        else:
+                            # Every comment must have a line number for the GitHub API
+                            logger.warning(f"Comment missing line number for {comment.get('path', 'unknown file')}")
+                            # If we have a position but no line, try to convert position to line
+                            if "position" in comment and "path" in comment:
+                                for line, pos, _ in file_line_map.get(comment["path"], []):
+                                    if pos == comment["position"]:
+                                        comment["line"] = line
+                                        logger.info(f"Converted position {pos} to line {line} for {comment['path']}")
+                                        break
+                                
+                                # If we still don't have a line number, use a default
+                                if "line" not in comment:
+                                    logger.warning(f"Unable to map position to line, using default line 1")
+                                    comment["line"] = 1
+                            else:
+                                comment["line"] = 1  # Default to line 1 if no line or position
+                                logger.warning(f"Missing line and position, defaulting to line 1")
                         
                         # Ensure we have a side parameter for line comments
-                        if "line" in comment and "side" not in comment:
+                        if "side" not in comment:
                             comment["side"] = "RIGHT"
                             
                         # For multi-line comments, ensure start_side is set if start_line is present
                         if "start_line" in comment and "start_side" not in comment:
                             comment["start_side"] = "RIGHT"
+                    
+                    # Log some sample comments for debugging
+                    if all_comments:
+                        sample_comment = all_comments[0]
+                        logger.debug(f"Sample comment: {sample_comment['path']}:{sample_comment.get('line', 'unknown')} - {sample_comment.get('side', 'unknown side')}")
                     
                     line_comment_success = post_line_comments(repo, pr_number, github_token, all_comments)
                     if not line_comment_success:
@@ -637,6 +660,12 @@ def review_pr(config_path: Optional[str] = None, verbose: bool = False) -> bool:
                         logger.info("Attempting to post comments one by one")
                         for i, comment in enumerate(all_comments):
                             try:
+                                # Ensure each individual comment has required fields
+                                if "line" not in comment:
+                                    comment["line"] = 1
+                                if "side" not in comment:
+                                    comment["side"] = "RIGHT"
+                                
                                 single_success = post_line_comments(repo, pr_number, github_token, [comment])
                                 if single_success:
                                     logger.info(f"Successfully posted comment {i+1}/{len(all_comments)}")
