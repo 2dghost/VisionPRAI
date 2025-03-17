@@ -6,8 +6,10 @@ Provides a unified interface for generating responses from different AI models.
 import os
 import json
 import requests
-from typing import Dict, Any, Optional
+import time
+import random
 import logging
+from typing import Dict, Any, Optional, Callable, Union
 
 
 class ModelAdapter:
@@ -56,6 +58,14 @@ class ModelAdapter:
         self.model = config["model"]
         self.max_tokens = config.get("max_tokens", 1500)
         
+        # Rate limiting configuration
+        self.rate_limit_config = config.get("rate_limiting", {})
+        self.max_retries = self.rate_limit_config.get("max_retries", 5)
+        self.initial_backoff = self.rate_limit_config.get("initial_backoff", 1)
+        self.max_backoff = self.rate_limit_config.get("max_backoff", 60)
+        self.backoff_factor = self.rate_limit_config.get("backoff_factor", 2)
+        self.jitter = self.rate_limit_config.get("jitter", 0.1)
+        
         if not self.api_key:
             raise ValueError(f"API key for {self.provider} not found in config or environment variables")
 
@@ -73,20 +83,76 @@ class ModelAdapter:
             ValueError: If the provider is not supported
             RuntimeError: If the API call fails
         """
-        if self.provider == "openai":
-            return self._call_openai(prompt)
-        elif self.provider == "anthropic":
-            return self._call_anthropic(prompt)
-        elif self.provider == "google":
-            return self._call_google(prompt)
-        elif self.provider == "mistral":
-            return self._call_mistral(prompt)
-        elif self.provider == "ollama":
-            return self._call_ollama(prompt)
-        elif self.provider == "huggingface":
-            return self._call_huggingface(prompt)
-        else:
+        # Map provider to appropriate API call function
+        provider_functions = {
+            "openai": self._call_openai,
+            "anthropic": self._call_anthropic,
+            "google": self._call_google,
+            "mistral": self._call_mistral,
+            "ollama": self._call_ollama,
+            "huggingface": self._call_huggingface
+        }
+        
+        if self.provider not in provider_functions:
             raise ValueError(f"Unsupported provider: {self.provider}")
+        
+        # Call the appropriate function with retry mechanism
+        return self._with_retry(provider_functions[self.provider], prompt)
+    
+    def _with_retry(self, api_call_func: Callable, prompt: str) -> str:
+        """
+        Execute an API call with smart exponential backoff for rate limiting.
+        
+        Args:
+            api_call_func: The function to call the API
+            prompt: The prompt to send to the API
+            
+        Returns:
+            The response from the API
+            
+        Raises:
+            RuntimeError: If all retries fail
+        """
+        logger = logging.getLogger("ai-pr-reviewer")
+        backoff = self.initial_backoff
+        attempt = 0
+        
+        while attempt < self.max_retries:
+            attempt += 1
+            try:
+                return api_call_func(prompt)
+            except Exception as e:
+                error_message = str(e).lower()
+                
+                # Check if it's a rate limiting error
+                is_rate_limit = any(phrase in error_message for phrase in [
+                    "rate limit", "ratelimit", "too many requests", "429", 
+                    "quota exceeded", "capacity", "throttle", "overloaded"
+                ])
+                
+                # On the last attempt, re-raise the exception
+                if attempt == self.max_retries:
+                    logger.error(f"Final retry attempt failed: {str(e)}")
+                    raise RuntimeError(f"API call failed after {self.max_retries} attempts: {str(e)}")
+                
+                # Calculate backoff with jitter
+                jitter_amount = random.uniform(-self.jitter, self.jitter) * backoff
+                sleep_time = backoff + jitter_amount
+                
+                if is_rate_limit:
+                    logger.warning(
+                        f"Rate limit detected. Retrying in {sleep_time:.2f} seconds. "
+                        f"Attempt {attempt}/{self.max_retries}"
+                    )
+                else:
+                    logger.warning(
+                        f"API call failed: {str(e)}. Retrying in {sleep_time:.2f} seconds. "
+                        f"Attempt {attempt}/{self.max_retries}"
+                    )
+                
+                # Sleep and increase backoff for next attempt
+                time.sleep(sleep_time)
+                backoff = min(backoff * self.backoff_factor, self.max_backoff)
 
     def _call_openai(self, prompt: str) -> str:
         """Call OpenAI API."""

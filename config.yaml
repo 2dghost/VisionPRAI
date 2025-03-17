@@ -19,6 +19,19 @@ model:
   
   # Maximum tokens to generate
   max_tokens: 4000
+  
+  # Rate limiting configuration
+  rate_limiting:
+    # Maximum number of retry attempts
+    max_retries: 5
+    # Initial backoff time in seconds
+    initial_backoff: 1
+    # Maximum backoff time in seconds
+    max_backoff: 60
+    # Backoff multiplier for exponential backoff
+    backoff_factor: 2
+    # Jitter factor (0-1) to add randomness to backoff times
+    jitter: 0.1
 
 # Review Configuration
 review:
@@ -41,6 +54,25 @@ review:
       
     # Maximum file size to review (in KB, 0 = no limit)
     max_file_size: 500
+  
+  # Language detection configuration
+  language_detection:
+    # Whether to enable language-specific detection
+    enabled: true
+    
+    # Custom language file extensions (will override defaults if duplicated)
+    custom_extensions:
+      # Add any custom extensions here, for example:
+      # ".vue": "javascript"
+      # ".razor": "csharp"
+    
+    # Configure severity levels for different issue types
+    severity_levels:
+      "sql_injection": "critical"
+      "command_injection": "critical"
+      "path_traversal": "high"
+      "error_handling": "medium"
+      "hardcoded_secrets": "high"
   
   # Comment extraction configuration
     # Regex patterns used to extract line-specific comments from AI review text

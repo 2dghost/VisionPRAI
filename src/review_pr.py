@@ -34,12 +34,14 @@ try:
     )
     from comment_extractor import CommentExtractor
     from file_filter import FileFilter
+    from language_detector import LanguageDetector, detect_language, detect_issues
     from custom_exceptions import (
         VisionPRAIError,
         ConfigurationError,
         MissingConfigurationError,
         InvalidConfigurationError,
-        CommentExtractionError
+        CommentExtractionError,
+        LanguageDetectionError
     )
     from logging_config import get_logger, with_context
 except ImportError:
@@ -56,12 +58,14 @@ except ImportError:
     )
     from src.comment_extractor import CommentExtractor
     from src.file_filter import FileFilter
+    from src.language_detector import LanguageDetector, detect_language, detect_issues
     from src.custom_exceptions import (
         VisionPRAIError,
         ConfigurationError,
         MissingConfigurationError, 
         InvalidConfigurationError,
-        CommentExtractionError
+        CommentExtractionError,
+        LanguageDetectionError
     )
     from src.logging_config import get_logger, with_context
 
@@ -215,6 +219,9 @@ def generate_prompt(diff: str, files: List[Dict[str, Any]], config: Dict[str, An
     file_filtering_enabled = config.get("review", {}).get("file_filtering", {}).get("enabled", False)
     exclude_patterns = config.get("review", {}).get("file_filtering", {}).get("exclude_patterns", [])
     
+    # Check if language detection is enabled
+    language_detection_enabled = config.get("review", {}).get("language_detection", {}).get("enabled", False)
+    
     # Get review format settings
     format_config = config.get("review", {}).get("format", {})
     include_summary = format_config.get("include_summary", True)
@@ -225,14 +232,51 @@ def generate_prompt(diff: str, files: List[Dict[str, Any]], config: Dict[str, An
     
     # Extract relevant file info
     file_info = []
-    for file in files:
-        file_info.append({
-            "filename": file["filename"],
-            "status": file["status"],
-            "additions": file["additions"],
-            "deletions": file["deletions"],
-            "changes": file["changes"]
-        })
+    
+    # If language detection is enabled, add language information to file info
+    if language_detection_enabled:
+        language_detector = LanguageDetector(config_path=config.get("config_path", "config.yaml"))
+        
+        for file in files:
+            language = language_detector.detect_language(file["filename"])
+            file_info_entry = {
+                "filename": file["filename"],
+                "status": file["status"],
+                "additions": file["additions"],
+                "deletions": file["deletions"],
+                "changes": file["changes"],
+                "language": language
+            }
+            
+            # Only add detailed language analysis for non-binary files that can be analyzed
+            if file.get("patch") and language != "unknown":
+                try:
+                    # Extract code from the patch
+                    code_content = file.get("patch", "")
+                    # Detect potential issues
+                    detected_issues = language_detector.detect_issues(file["filename"], code_content)
+                    
+                    # Only add if there are issues
+                    if detected_issues:
+                        file_info_entry["potential_issues"] = {}
+                        for category, issues in detected_issues.items():
+                            issue_count = len(issues)
+                            if issue_count > 0:
+                                file_info_entry["potential_issues"][category] = issue_count
+                except Exception as e:
+                    logger.warning(f"Error detecting issues in {file['filename']}: {str(e)}")
+            
+            file_info.append(file_info_entry)
+    else:
+        # Default file info without language detection
+        for file in files:
+            file_info.append({
+                "filename": file["filename"],
+                "status": file["status"],
+                "additions": file["additions"],
+                "deletions": file["deletions"],
+                "changes": file["changes"]
+            })
     
     # Create a comprehensive prompt
     prompt = (
@@ -245,12 +289,17 @@ def generate_prompt(diff: str, files: List[Dict[str, Any]], config: Dict[str, An
         "```suggestion\n"
         "<exact code that should replace the original code>\n"
         "```\n\n"
-        "Explanation: <why this change improves the code>\n\n"
+        "Explanation: <why this change improves the code, including technical rationale, potential bugs prevented, and relevant best practices>\n\n"
         "Guidelines:\n"
         "1. ALWAYS include the file name and line number in the header (### filename.ext:line_number)\n"
         "2. Each suggestion must be preceded by a clear explanation of the issue\n"
         "3. The suggestion block must contain the complete fixed code\n"
-        "4. After each suggestion, explain why your solution is better\n"
+        "4. After each suggestion, provide a DETAILED explanation including:\n"
+        "   - Technical reasoning behind the change\n"
+        "   - Specific bugs or issues prevented\n"
+        "   - How it follows best practices or patterns used elsewhere in the codebase\n"
+        "   - Performance, security, or maintainability benefits\n"
+        "   - Any relevant documentation or standards that support your suggestion\n"
         "5. Make suggestions ONLY for lines that exist in the diff\n"
         "6. If you find ANY issues, you MUST provide at least one code suggestion\n"
         "7. IMPORTANT: Each file-specific comment MUST start with '### filename.ext:line_number' format\n"
@@ -274,6 +323,85 @@ def generate_prompt(diff: str, files: List[Dict[str, Any]], config: Dict[str, An
         "    - Improper Resource Cleanup: Find missing context managers for files, connections, etc.\n"
         "    - Unhandled API Errors: Identify external API calls without error handling\n\n"
     )
+    
+    # Add language-specific guidance if language detection is enabled
+    if language_detection_enabled:
+        # Collect all detected languages
+        detected_languages = set()
+        potential_issues_detected = False
+        
+        for file_entry in file_info:
+            if "language" in file_entry and file_entry["language"] != "unknown":
+                detected_languages.add(file_entry["language"])
+            if file_entry.get("potential_issues"):
+                potential_issues_detected = True
+        
+        if detected_languages:
+            prompt += "Language-specific guidance:\n\n"
+            
+            if "python" in detected_languages:
+                prompt += (
+                    "Python Best Practices:\n"
+                    "- Use context managers (with statements) for resource management\n"
+                    "- Follow PEP 8 style guidelines\n"
+                    "- Use type hints for better code clarity\n"
+                    "- Use f-strings instead of % or .format() for string formatting\n"
+                    "- Catch specific exceptions instead of broad exception clauses\n"
+                    "- Use list/dict comprehensions for concise transformations\n"
+                    "- Use parameterized queries for database operations\n\n"
+                )
+            
+            if "javascript" in detected_languages or "typescript" in detected_languages:
+                prompt += (
+                    "JavaScript/TypeScript Best Practices:\n"
+                    "- Use const/let instead of var\n"
+                    "- Prefer template literals for string concatenation\n"
+                    "- Use === instead of == for equality comparisons\n"
+                    "- Use async/await for asynchronous operations\n"
+                    "- Avoid eval() and document.write() for security reasons\n"
+                    "- Use parameterized queries for database operations\n"
+                    "- Sanitize user input before using in HTML or SQL contexts\n\n"
+                )
+            
+            if "csharp" in detected_languages:
+                prompt += (
+                    "C# Best Practices:\n"
+                    "- Use using statements for IDisposable resources\n"
+                    "- Prefer async/await over raw Task objects\n"
+                    "- Use proper exception handling with specific catch clauses\n"
+                    "- Use string interpolation instead of string.Format where appropriate\n"
+                    "- Use parameterized queries for SQL operations\n"
+                    "- Follow C# naming conventions (PascalCase for methods, etc.)\n\n"
+                )
+            
+            if "java" in detected_languages:
+                prompt += (
+                    "Java Best Practices:\n"
+                    "- Use try-with-resources for AutoCloseable resources\n"
+                    "- Follow Java naming conventions\n"
+                    "- Use parameterized queries (PreparedStatement) for SQL operations\n"
+                    "- Avoid null pointer exceptions with proper null checking\n"
+                    "- Use StringBuilder for string concatenation in loops\n"
+                    "- Follow Java Bean conventions for data objects\n\n"
+                )
+        
+        # Add information about detected potential issues
+        if potential_issues_detected:
+            prompt += (
+                "The following potential issues were automatically detected in this PR:\n"
+            )
+            
+            for file_entry in file_info:
+                if file_entry.get("potential_issues"):
+                    prompt += f"\n{file_entry['filename']} ({file_entry['language']}):\n"
+                    
+                    for category, count in file_entry["potential_issues"].items():
+                        prompt += f"- {category.replace('_', ' ').title()}: {count} potential issues\n"
+            
+            prompt += (
+                "\nPlease carefully check these files and issue types in your review, "
+                "and provide specific code suggestions to fix any confirmed issues.\n\n"
+            )
     
     # Add cursor rules guidance if available
     if cursor_rules:
@@ -321,6 +449,11 @@ def generate_prompt(diff: str, files: List[Dict[str, Any]], config: Dict[str, An
         "This section MUST contain at least one file-specific comment for each file with issues.\n"
         "IMPORTANT: This section is required and will be used to post comments on specific lines of code.\n"
         "DO NOT provide general recommendations - ONLY specific code changes with file and line references.\n"
+        "ENSURE each explanation is detailed and educational, including:\n"
+        "- The technical reasoning behind the suggested change\n"
+        "- Potential issues or bugs prevented by the change\n"
+        "- How the change improves code quality, performance, or security\n"
+        "- Any relevant best practices, patterns or standards that support the suggestion\n"
     )
     
     if include_recommendations:
@@ -347,6 +480,8 @@ def generate_prompt(diff: str, files: List[Dict[str, Any]], config: Dict[str, An
         "- Use the EXACT section headers shown above (## Summary, ## Overview of Changes, etc.)\n"
         "- NEVER provide general recommendations without specific code changes\n"
         "- ALL recommendations MUST be in the form of specific code changes with file and line references\n"
+        "- Provide comprehensive explanations that help developers learn and improve their coding skills\n"
+        "- Include context about why your suggestions follow best practices or improve the codebase\n"
     )
     
     return prompt

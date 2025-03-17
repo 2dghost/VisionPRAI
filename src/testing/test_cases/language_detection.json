@@ -1,0 +1,54 @@
+{
+  "name": "language_detection",
+  "description": "Test cases for language-specific detection",
+  "test_cases": [
+    {
+      "name": "python_sql_injection",
+      "description": "Detect SQL injection in Python code",
+      "language": "python",
+      "code": "def get_user(user_id):\n    cursor.execute(f\"SELECT * FROM users WHERE id = {user_id}\")\n    return cursor.fetchone()",
+      "expected_issues": ["sql_injection"],
+      "severity": "critical"
+    },
+    {
+      "name": "python_command_injection",
+      "description": "Detect command injection in Python code",
+      "language": "python",
+      "code": "def run_command(cmd):\n    os.system(cmd)\n    return True",
+      "expected_issues": ["command_injection"],
+      "severity": "critical"
+    },
+    {
+      "name": "javascript_sql_injection",
+      "description": "Detect SQL injection in JavaScript code",
+      "language": "javascript",
+      "code": "function getUser(userId) {\n  const query = \"SELECT * FROM users WHERE id = \" + userId;\n  return db.query(query);\n}",
+      "expected_issues": ["sql_injection"],
+      "severity": "critical"
+    },
+    {
+      "name": "csharp_sql_injection",
+      "description": "Detect SQL injection in C# code",
+      "language": "csharp",
+      "code": "public User GetUser(string userId) {\n  var query = $\"SELECT * FROM Users WHERE Id = {userId}\";\n  return _context.Users.FromSqlRaw(query).FirstOrDefault();\n}",
+      "expected_issues": ["sql_injection"],
+      "severity": "critical"
+    },
+    {
+      "name": "java_error_handling",
+      "description": "Detect poor error handling in Java code",
+      "language": "java",
+      "code": "public void processFile(String path) {\n  try {\n    File file = new File(path);\n    // Process file\n  } catch (Exception e) {\n    // Do nothing\n  }\n}",
+      "expected_issues": ["error_handling"],
+      "severity": "medium"
+    },
+    {
+      "name": "typescript_hardcoded_secrets",
+      "description": "Detect hardcoded secrets in TypeScript code",
+      "language": "typescript",
+      "code": "const config = {\n  apiKey: \"abcd1234efgh5678ijkl9012\",\n  endpoint: \"https://api.example.com\"\n};",
+      "expected_issues": ["hardcoded_secrets"],
+      "severity": "high"
+    }
+  ]
+} 
