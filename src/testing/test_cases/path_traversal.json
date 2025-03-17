@@ -1,0 +1,40 @@
+{
+  "name": "path_traversal",
+  "description": "Code with path traversal vulnerabilities",
+  "files": {
+    "file_handler.py": [
+      "def read_user_file(filename):",
+      "    # Vulnerable to path traversal",
+      "    with open(f'/var/data/user_files/{filename}', 'r') as f:",
+      "        return f.read()",
+      "",
+      "def save_profile_image(user_id, image_path):",
+      "    # Also vulnerable to path traversal",
+      "    destination = os.path.join('/var/www/images/', image_path)",
+      "    shutil.copy(image_path, destination)",
+      "    return f'/images/{image_path}'",
+      "",
+      "def get_template(template_name):",
+      "    # No validation of template path",
+      "    template_path = f'templates/{template_name}.html'",
+      "    return render_template(template_path)"
+    ]
+  },
+  "expected_comments": [
+    {
+      "path": "file_handler.py",
+      "line": 3,
+      "body": "Path traversal vulnerability detected. User-controlled input in file paths without validation can lead to unauthorized file access. Use os.path.basename() or validate the filename against a whitelist."
+    },
+    {
+      "path": "file_handler.py",
+      "line": 8,
+      "body": "Path traversal vulnerability detected. User-controlled paths should be sanitized before being used in file operations."
+    },
+    {
+      "path": "file_handler.py",
+      "line": 14,
+      "body": "Path traversal vulnerability detected. Template names should be validated against a whitelist to prevent unauthorized access to files."
+    }
+  ]
+} 

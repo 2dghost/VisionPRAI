@@ -1,0 +1,38 @@
+{
+  "name": "sql_injection",
+  "description": "Code with SQL injection vulnerability",
+  "files": {
+    "database.py": [
+      "def get_user(username):",
+      "    cursor.execute(f\"SELECT * FROM users WHERE username = '{username}'\")",
+      "    return cursor.fetchone()",
+      "",
+      "def update_user_email(user_id, email):",
+      "    query = \"UPDATE users SET email = '%s' WHERE id = %s\" % (email, user_id)",
+      "    cursor.execute(query)",
+      "    connection.commit()",
+      "",
+      "def search_products(search_term):",
+      "    # This is also vulnerable to SQL injection",
+      "    cursor.execute(\"SELECT * FROM products WHERE name LIKE '%\" + search_term + \"%'\")",
+      "    return cursor.fetchall()"
+    ]
+  },
+  "expected_comments": [
+    {
+      "path": "database.py",
+      "line": 2,
+      "body": "SQL Injection vulnerability detected. Use parameterized queries instead of string formatting."
+    },
+    {
+      "path": "database.py",
+      "line": 6,
+      "body": "SQL Injection vulnerability detected. String formatting with % operator should not be used with SQL queries. Use parameterized queries instead."
+    },
+    {
+      "path": "database.py",
+      "line": 12,
+      "body": "SQL Injection vulnerability detected. String concatenation in SQL queries creates security vulnerabilities. Use parameterized queries instead."
+    }
+  ]
+} 

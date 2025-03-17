@@ -1,0 +1,58 @@
+{
+  "name": "missing_error_handling",
+  "description": "Code missing proper error handling",
+  "files": {
+    "example.py": [
+      "def process_data(data):",
+      "    # Missing try-except blocks",
+      "    result = data['key'] * 10",
+      "    return process_result(result)",
+      "",
+      "def read_config_file(file_path):",
+      "    # File operations without proper error handling",
+      "    f = open(file_path, 'r')",
+      "    content = f.read()",
+      "    f.close()",
+      "    return content",
+      "",
+      "def connect_to_api(url):",
+      "    # API call without error handling",
+      "    response = requests.get(url)",
+      "    return response.json()",
+      "",
+      "def process_exception():",
+      "    try:",
+      "        do_something_risky()",
+      "    except Exception as e:",
+      "        # Too broad exception handling",
+      "        pass  # Swallowed exception"
+    ]
+  },
+  "expected_comments": [
+    {
+      "path": "example.py",
+      "line": 3,
+      "body": "This code lacks error handling. Consider adding try-except blocks to handle potential KeyError exceptions."
+    },
+    {
+      "path": "example.py",
+      "line": 8,
+      "body": "File operations without proper error handling. Use a context manager (with statement) to ensure the file is properly closed."
+    },
+    {
+      "path": "example.py",
+      "line": 15,
+      "body": "API call without error handling. Add try-except blocks to handle potential network or API errors."
+    },
+    {
+      "path": "example.py",
+      "line": 21,
+      "body": "Overly broad exception handling. Catch specific exceptions instead of Exception."
+    },
+    {
+      "path": "example.py",
+      "line": 23,
+      "body": "Swallowed exception. Empty except blocks or pass statements hide important errors. Log the exception or handle it appropriately."
+    }
+  ]
+} 

@@ -260,6 +260,19 @@ def generate_prompt(diff: str, files: List[Dict[str, Any]], config: Dict[str, An
         "11. NEVER provide general recommendations without specific code changes\n"
         "12. ALL recommendations MUST be in the form of specific code changes with file and line references\n"
         "13. DO NOT suggest 'Consider refactoring...' or similar vague recommendations - always provide exact code changes\n\n"
+        "14. Pay special attention to these critical security issues:\n"
+        "    - SQL Injection: Identify ANY string concatenation or f-string in SQL queries\n"
+        "    - Path Traversal: Check for directory/file path manipulation without validation\n"
+        "    - Command Injection: Flag any shell command execution with user input\n"
+        "    - XSS Vulnerabilities: Watch for unescaped user input in HTML/JS contexts\n"
+        "    - Insecure Authentication: Detect weak password handling or token validation\n"
+        "    - Secrets Management: Identify hardcoded credentials or secrets\n"
+        "15. Thoroughly identify error handling problems:\n"
+        "    - Missing Exception Handling: Identify operations without proper try/except blocks\n"
+        "    - Overly Broad Exception Clauses: Flag code that catches Exception without specific handling\n"
+        "    - Swallowed Exceptions: Detect empty except blocks or those that hide important errors\n"
+        "    - Improper Resource Cleanup: Find missing context managers for files, connections, etc.\n"
+        "    - Unhandled API Errors: Identify external API calls without error handling\n\n"
     )
     
     # Add cursor rules guidance if available

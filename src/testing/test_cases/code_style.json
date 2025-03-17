@@ -1,0 +1,23 @@
+{
+  "name": "code_style",
+  "description": "Code with style issues",
+  "files": {
+    "style_example.py": [
+      "def badlyNamedFunction( a,b ):",
+      "    x=a+b",
+      "    return x"
+    ]
+  },
+  "expected_comments": [
+    {
+      "path": "style_example.py",
+      "line": 1,
+      "body": "Function naming doesn't follow PEP 8 style guidelines. Consider using snake_case for function names."
+    },
+    {
+      "path": "style_example.py",
+      "line": 2,
+      "body": "Missing spaces around operators. Add spaces around the '+' operator and the '=' assignment."
+    }
+  ]
+} 
