@@ -191,6 +191,7 @@ def post_line_comments(
     Post line-specific review comments on a pull request.
     
     This function wraps post_review_with_comments to maintain backward compatibility.
+    It ensures comments are properly nested under files in the GitHub Files Changed tab.
     
     Args:
         repo: Repository in the format 'owner/repo'
@@ -202,11 +203,28 @@ def post_line_comments(
     Returns:
         True if successful, False otherwise
     """
+    logger.info("post_line_comments: Using draft review approach with overview text")
     return post_review_with_comments(repo, pr_number, token, comments, overview_text)
 
 
-def create_review_with_individual_comments(repo, pr_number, token, comments, commit_sha):
-    """Helper function to create a review and add comments one by one."""
+def create_review_with_individual_comments(repo, pr_number, token, comments, commit_sha, overview_text=""):
+    """
+    Helper function to create a review and add comments one by one.
+    
+    This creates a draft review, adds file-specific comments, and then submits it,
+    ensuring comments are properly nested under files in the GitHub Files Changed tab.
+    
+    Args:
+        repo: Repository in the format 'owner/repo'
+        pr_number: Pull request number 
+        token: GitHub token
+        comments: List of comment dictionaries with 'path', 'line', and 'body' keys
+        commit_sha: SHA of the commit to review
+        overview_text: Optional text for the overall review summary
+        
+    Returns:
+        True if successful, False otherwise
+    """
     logger.info("*** USING DRAFT REVIEW APPROACH: This creates a draft review, adds comments, then submits it ***")
     
     headers = {
@@ -223,10 +241,10 @@ def create_review_with_individual_comments(repo, pr_number, token, comments, com
         review_data = {
             "commit_id": commit_sha,
             "event": "PENDING",  # Create a draft review
-            "body": f"AI PR Review - Creating individual comments..."
+            "body": "AI PR Review - Creating review with file-specific comments..."
         }
         
-        logger.info("Creating empty review for individual comments")
+        logger.info("Creating empty draft review")
         
         review_response = requests.post(review_url, headers=headers, json=review_data)
         
@@ -260,65 +278,129 @@ def create_review_with_individual_comments(repo, pr_number, token, comments, com
         # Continue anyway - we'll use line numbers directly if needed
         file_patches = {}
     
+    # Group comments by file to create nested file-specific sections
+    comments_by_file = {}
+    for comment in comments:
+        path = comment["path"]
+        if path not in comments_by_file:
+            comments_by_file[path] = []
+        comments_by_file[path].append(comment)
+    
+    logger.info(f"Grouped comments into {len(comments_by_file)} files")
+    
     # Add comments to the review one by one
     comments_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews/{review_id}/comments"
     success = True
+    total_comments_added = 0
     
-    for i, comment in enumerate(comments):
+    # Process files in alphabetical order for consistency
+    for path in sorted(comments_by_file.keys()):
+        file_comments = comments_by_file[path]
+        logger.info(f"Adding {len(file_comments)} comments for file {path}")
+        
+        # Add a file header comment as the first comment for this file to group them
+        file_header = f"## File Review: {path}"
         try:
-            path = comment["path"]
-            line_num = int(comment.get("line", 1))
+            first_comment = file_comments[0]
+            line_num = int(first_comment.get("line", 1))
             position = None
             
             # Try to get position from patch if needed
-            if "position" in comment:
-                position = comment["position"]
-            elif path in file_patches:
+            if path in file_patches:
                 position = calculate_position_in_diff(file_patches[path], line_num)
-                logger.debug(f"Calculated position {position} for {path}:{line_num}")
+                logger.debug(f"Calculated position {position} for file header at {path}:{line_num}")
             
-            # Each comment needs the correct parameters
-            comment_data = {
+            # Create the file header comment
+            header_data = {
                 "path": path,
-                "body": comment["body"],
+                "body": file_header,
                 "side": "RIGHT"  # Always comment on the right side (new version)
             }
             
-            # Use position if available, otherwise line (though line might not work)
+            # Use position if available, otherwise line
             if position is not None:
-                comment_data["position"] = position
+                header_data["position"] = position
             else:
-                comment_data["line"] = line_num
-                logger.warning(f"Using line instead of position for {path}:{line_num}")
+                header_data["line"] = line_num
             
-            # Add optional fields if present
-            if "start_line" in comment:
-                comment_data["start_line"] = int(comment["start_line"])
-                comment_data["start_side"] = comment.get("start_side", "RIGHT")
+            logger.debug(f"Adding file header comment for {path}")
             
-            logger.debug(f"Adding comment {i+1}/{len(comments)}: {path}:{line_num}")
+            header_response = requests.post(comments_url, headers=headers, json=header_data)
             
-            comment_response = requests.post(comments_url, headers=headers, json=comment_data)
-            
-            if comment_response.status_code >= 400:
-                logger.error(f"Failed to add comment {i+1}: HTTP {comment_response.status_code}: {comment_response.text}")
-                # Don't fail immediately - try to add other comments
-                success = False
+            if header_response.status_code >= 400:
+                logger.warning(f"Failed to add file header comment for {path}: HTTP {header_response.status_code}")
+                # Continue with individual comments anyway
             else:
-                logger.debug(f"Successfully added comment {i+1}/{len(comments)}")
-                
-            # Add a delay to avoid rate limits
-            time.sleep(1.0)  # Increased delay to avoid rate limiting
+                logger.debug(f"Successfully added file header comment for {path}")
+                total_comments_added += 1
+            
+            # Sleep briefly to avoid rate limits
+            time.sleep(0.5)
         except Exception as e:
-            logger.error(f"Error adding comment {i+1}: {str(e)}")
-            success = False
+            logger.warning(f"Error adding file header comment for {path}: {str(e)}")
+            # Continue with individual comments
+        
+        # Add individual comments for this file
+        for i, comment in enumerate(file_comments):
+            try:
+                line_num = int(comment.get("line", 1))
+                position = None
+                
+                # Try to get position from patch if needed
+                if "position" in comment:
+                    position = comment["position"]
+                elif path in file_patches:
+                    position = calculate_position_in_diff(file_patches[path], line_num)
+                    logger.debug(f"Calculated position {position} for {path}:{line_num}")
+                
+                # Each comment needs the correct parameters
+                comment_data = {
+                    "path": path,
+                    "body": comment["body"],
+                    "side": "RIGHT"  # Always comment on the right side (new version)
+                }
+                
+                # Use position if available, otherwise line (though line might not work)
+                if position is not None:
+                    comment_data["position"] = position
+                else:
+                    comment_data["line"] = line_num
+                    logger.warning(f"Using line instead of position for {path}:{line_num}")
+                
+                # Add optional fields if present
+                if "start_line" in comment:
+                    comment_data["start_line"] = int(comment["start_line"])
+                    comment_data["start_side"] = comment.get("start_side", "RIGHT")
+                
+                logger.debug(f"Adding comment {i+1}/{len(file_comments)} for {path}: line {line_num}")
+                
+                comment_response = requests.post(comments_url, headers=headers, json=comment_data)
+                
+                if comment_response.status_code >= 400:
+                    logger.error(f"Failed to add comment for {path}:{line_num}: HTTP {comment_response.status_code}: {comment_response.text}")
+                    # Don't fail immediately - try to add other comments
+                    success = False
+                else:
+                    logger.debug(f"Successfully added comment for {path}:{line_num}")
+                    total_comments_added += 1
+                    
+                # Add a delay to avoid rate limits
+                time.sleep(0.5)
+            except Exception as e:
+                logger.error(f"Error adding comment for {path}:{line_num}: {str(e)}")
+                success = False
     
     # Submit the review to publish the comments
     try:
         submit_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews/{review_id}/events"
         
+        # Use provided overview text if available, otherwise generate a generic message
+        review_body = overview_text
+        if not review_body:
+            review_body = f"# AI PR Review\n\nI've reviewed the changes and left {total_comments_added} specific comments across {len(comments_by_file)} files."
+        
         submit_data = {
-            "body": f"AI PR Review - I've reviewed the changes and left {len(comments)} specific comments on the code.",
+            "body": review_body,
             "event": "COMMENT"
         }
         
@@ -330,7 +412,7 @@ def create_review_with_individual_comments(repo, pr_number, token, comments, com
             logger.error(f"Failed to submit review: HTTP {submit_response.status_code}: {submit_response.text}")
             return False
             
-        logger.info(f"Successfully submitted review with {len(comments)} comments")
+        logger.info(f"Successfully submitted review with {total_comments_added} comments across {len(comments_by_file)} files")
         
         # Verify the comments were created correctly
         try:
@@ -521,8 +603,8 @@ def post_review_with_comments(repo: str, pr_number: str, token: str, comments: L
         True if successful, False otherwise
     """
     logger.info(f"*** CALLING post_review_with_comments with {len(comments)} comments ***")
-    for i, comment in enumerate(comments):
-        logger.info(f"Comment {i+1}: path={comment.get('path')}, line={comment.get('line')}")
+    if overview_text:
+        logger.info("Using provided overview text for the review")
     
     if not comments:
         return post_review_comment(repo, pr_number, token, overview_text)
@@ -598,7 +680,8 @@ def post_review_with_comments(repo: str, pr_number: str, token: str, comments: L
     
     # Use the draft review approach (Method 2) which is more reliable
     logger.info("Using draft review approach for posting comments")
-    return create_review_with_individual_comments(repo, pr_number, token, comments, latest_commit_sha)
+    # Pass the overview text for use in the review
+    return create_review_with_individual_comments(repo, pr_number, token, comments, latest_commit_sha, overview_text)
 
 
 def test_github_review_methods(repo: str, pr_number: str, token: str, test_text: str = "Test comment") -> bool:

@@ -609,24 +609,6 @@ def review_pr(config_path: Optional[str] = None, verbose: bool = False) -> bool:
     # Add a note about code-specific comments
     overview_text += "\n\n> Detailed feedback has been added as review comments on specific code lines."
     
-    # Try to post the overview comment
-    try:
-        logger.info("Attempting to post overview comment")
-        overview_success = post_review_comment(repo, pr_number, github_token, overview_text)
-        if not overview_success:
-            logger.error("Failed to post overview comment - API call returned False")
-            # Try an alternative approach - post a simpler comment
-            simple_overview = "# AI Review\n\nThe AI has reviewed this PR. See the detailed comments for feedback."
-            logger.info("Attempting to post simplified overview comment")
-            simple_success = post_review_comment(repo, pr_number, github_token, simple_overview)
-            if not simple_success:
-                logger.error("Failed to post simplified overview comment")
-        else:
-            logger.info("Successfully posted overview comment")
-    except Exception as e:
-        logger.error(f"Exception while posting overview comment: {str(e)}", exc_info=True)
-        # Continue anyway to try posting line comments
-    
     # Check if we should post line-specific comments
     line_comments_enabled = config.get("review", {}).get("line_comments", True)
     if line_comments_enabled:
