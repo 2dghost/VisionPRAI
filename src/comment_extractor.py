@@ -316,6 +316,9 @@ class CommentExtractor:
         # Log the files available in the diff
         self.logger.debug(f"Files in diff: {list(file_line_map.keys())}")
         
+        # Primary pattern to match GitHub-style comments: ### filename.ext:line_number
+        github_pattern = re.compile(r'### ([^:\n]+):(\d+)\s*\n(.*?)(?=\n### [^:\n]+:\d+|\Z)', re.DOTALL)
+        
         # Match patterns like:
         # - "file.py:10: This is a comment"
         # - "In file.py, line 10: This is a comment"
@@ -329,16 +332,54 @@ class CommentExtractor:
         code_block_pattern = re.compile(r'```(?:[a-zA-Z0-9]+:)?([^:]+):(\d+)[\s\S]*?```\s*(.*?)(?:\n\n|\Z)', re.DOTALL)
         
         # Collect all pattern matches
+        github_matches = list(github_pattern.finditer(review_text))
         primary_matches = list(primary_pattern.finditer(review_text))
         secondary_matches = list(secondary_pattern.finditer(review_text))
         code_block_matches = list(code_block_pattern.finditer(review_text))
         
-        self.logger.debug(f"Found {len(primary_matches)} primary matches, {len(secondary_matches)} secondary matches, {len(code_block_matches)} code block matches")
+        self.logger.debug(f"Found {len(github_matches)} GitHub-style matches, {len(primary_matches)} primary matches, {len(secondary_matches)} secondary matches, {len(code_block_matches)} code block matches")
         
         # Extract comments
         comments = []
         
-        # Process primary matches first (these are the most reliable)
+        # Process GitHub-style matches first (these are the most reliable)
+        for match in github_matches:
+            file_path = match.group(1).strip()
+            line_num = int(match.group(2))
+            content = match.group(3).strip()
+            
+            self.logger.debug(f"Processing GitHub-style file-specific comment: {file_path}:{line_num}")
+            
+            # Check if the file exists in the diff
+            if not self.validate_file_path(file_path, file_line_map):
+                self.logger.warning(f"File {file_path} not found in diff, checking for similar files")
+                # Try to find a similar file name
+                matched_file_path = self.find_matching_file_path(file_path, file_line_map)
+                if matched_file_path != file_path:
+                    self.logger.info(f"Using matched file {matched_file_path} instead of {file_path}")
+                    file_path = matched_file_path
+                else:
+                    self.logger.warning(f"No similar file found for {file_path}, skipping comment")
+                    continue
+            
+            # Validate and adjust the line number if needed
+            adjusted_line_num = self.validate_line_number(file_path, line_num, file_line_map)
+            if adjusted_line_num != line_num:
+                self.logger.info(f"Adjusted line number from {line_num} to {adjusted_line_num} for {file_path}")
+                line_num = adjusted_line_num
+            
+            # GitHub API requires 'path' and 'line' parameters
+            comment_data = {
+                "path": file_path,
+                "line": line_num,
+                "side": "RIGHT",  # Always comment on the new version
+                "body": content
+            }
+            
+            comments.append(comment_data)
+            self.logger.debug(f"Added GitHub-style comment for {file_path}:{line_num}")
+        
+        # Process primary matches
         for match in primary_matches:
             file_path = match.group(1).strip()
             line_num = int(match.group(2))
@@ -357,14 +398,14 @@ class CommentExtractor:
                 else:
                     self.logger.warning(f"No similar file found for {file_path}, skipping comment")
                     continue
-                    
+            
             # Validate and adjust the line number if needed
             adjusted_line_num = self.validate_line_number(file_path, line_num, file_line_map)
             if adjusted_line_num != line_num:
                 self.logger.info(f"Adjusted line number from {line_num} to {adjusted_line_num} for {file_path}")
                 line_num = adjusted_line_num
             
-            # GitHub API requires 'line' and 'side' parameters
+            # GitHub API requires 'path' and 'line' parameters
             comment_data = {
                 "path": file_path,
                 "line": line_num,
@@ -373,7 +414,7 @@ class CommentExtractor:
             }
             
             comments.append(comment_data)
-            self.logger.debug(f"Added comment for {file_path}:{line_num}")
+            self.logger.debug(f"Added primary comment for {file_path}:{line_num}")
         
         # Process secondary matches
         for match in secondary_matches:
@@ -394,14 +435,14 @@ class CommentExtractor:
                 else:
                     self.logger.warning(f"No similar file found for {file_path}, skipping comment")
                     continue
-                    
+            
             # Validate and adjust the line number if needed
             adjusted_line_num = self.validate_line_number(file_path, line_num, file_line_map)
             if adjusted_line_num != line_num:
                 self.logger.info(f"Adjusted line number from {line_num} to {adjusted_line_num} for {file_path}")
                 line_num = adjusted_line_num
             
-            # GitHub API requires 'line' and 'side' parameters
+            # GitHub API requires 'path' and 'line' parameters
             comment_data = {
                 "path": file_path,
                 "line": line_num,
@@ -410,7 +451,7 @@ class CommentExtractor:
             }
             
             comments.append(comment_data)
-            self.logger.debug(f"Added comment for {file_path}:{line_num}")
+            self.logger.debug(f"Added secondary comment for {file_path}:{line_num}")
         
         # Process code block matches
         for match in code_block_matches:
@@ -442,7 +483,7 @@ class CommentExtractor:
                 self.logger.info(f"Adjusted line number from {line_num} to {adjusted_line_num} for {file_path}")
                 line_num = adjusted_line_num
             
-            # GitHub API requires 'line' and 'side' parameters
+            # GitHub API requires 'path' and 'line' parameters
             comment_data = {
                 "path": file_path,
                 "line": line_num,
@@ -451,7 +492,7 @@ class CommentExtractor:
             }
             
             comments.append(comment_data)
-            self.logger.debug(f"Added comment for {file_path}:{line_num}")
+            self.logger.debug(f"Added code block comment for {file_path}:{line_num}")
         
         # Log summary
         self.logger.info(f"Extracted {len(comments)} line-specific comments")

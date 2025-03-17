@@ -419,59 +419,66 @@ def post_line_comments(
         
         formatted_comments.append(formatted_comment)
     
-    # Create a review with comments in a single request
-    try:
-        review_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews"
-        
-        review_data = {
-            "commit_id": latest_commit_sha,
-            "event": "COMMENT",  # Submit the review immediately as a COMMENT
-            "body": f"AI PR Review - I've reviewed the changes and left {len(comments)} specific comments on the code.",
-            "comments": formatted_comments
-        }
-        
-        logger.info(f"Creating review with {len(formatted_comments)} comments")
-        logger.debug(f"Review data: commit_id={latest_commit_sha}, event=COMMENT, comments_count={len(formatted_comments)}")
-        
-        # Log a sample comment for debugging
-        if formatted_comments:
-            sample = formatted_comments[0]
-            logger.debug(f"Sample comment: path={sample['path']}, line={sample['line']}, side={sample['side']}")
-            
-        review_response = requests.post(review_url, headers=headers, json=review_data)
-        
-        # Check if the request was successful
-        if review_response.status_code >= 400:
-            error_body = review_response.text
-            logger.error(f"Failed to create review: HTTP {review_response.status_code}: {error_body}")
-            
-            # Try individual comments if bulk creation failed
-            logger.info("Attempting to create review with comments one by one")
-            return create_review_with_individual_comments(repo, pr_number, token, formatted_comments, latest_commit_sha)
-        
-        # Success!
-        review_id = review_response.json().get("id")
-        logger.info(f"Successfully created review #{review_id} with {len(formatted_comments)} comments")
-        
-        # Verify the review was created correctly by fetching it
+    # Instead of creating a review with all comments, create individual review comments
+    # This ensures each comment is rendered correctly in the "Files Changed" tab
+    logger.info(f"Creating individual review comments for {len(formatted_comments)} comments")
+    
+    success = True
+    failed_comments = 0
+    
+    # Create individual comments instead of a batch review
+    for i, comment in enumerate(formatted_comments):
         try:
-            verify_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews/{review_id}"
-            verify_response = requests.get(verify_url, headers=headers)
+            comment_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/comments"
             
-            if verify_response.status_code >= 400:
-                logger.warning(f"Could not verify review creation: HTTP {verify_response.status_code}")
+            comment_data = {
+                "commit_id": latest_commit_sha,
+                "path": comment["path"],
+                "body": comment["body"],
+                "line": comment["line"],
+                "side": comment["side"]
+            }
+            
+            # Add start_line and start_side for multi-line comments
+            if "start_line" in comment:
+                comment_data["start_line"] = comment["start_line"]
+                comment_data["start_side"] = comment.get("start_side", "RIGHT")
+            
+            logger.debug(f"Creating comment {i+1}/{len(formatted_comments)}: {comment['path']}:{comment['line']}")
+            
+            comment_response = requests.post(comment_url, headers=headers, json=comment_data)
+            
+            if comment_response.status_code >= 400:
+                error_body = comment_response.text
+                logger.error(f"Failed to create comment {i+1}: HTTP {comment_response.status_code}: {error_body}")
+                failed_comments += 1
+                # Don't fail the entire batch if some comments fail
+                if failed_comments > len(formatted_comments) * 0.5:  # If more than 50% of comments fail, abort
+                    logger.error(f"Too many comment failures: {failed_comments}/{len(formatted_comments)}. Aborting.")
+                    success = False
+                    break
             else:
-                review_data = verify_response.json()
-                comments_count = len(review_data.get("comments", []))
-                logger.info(f"Verified review #{review_id} has {comments_count} comments")
-        except Exception as e:
-            logger.warning(f"Error verifying review: {str(e)}")
-        
-        return True
+                logger.debug(f"Successfully created comment {i+1}/{len(formatted_comments)}")
             
-    except Exception as e:
-        logger.error(f"Error creating review: {str(e)}", exc_info=True)
-        return False
+            # Add a delay between comments to avoid rate limiting
+            if i < len(formatted_comments) - 1:  # Don't sleep after the last comment
+                time.sleep(1.0)
+        except Exception as e:
+            logger.error(f"Error creating comment {i+1}: {str(e)}")
+            failed_comments += 1
+            if failed_comments > len(formatted_comments) * 0.5:  # If more than 50% of comments fail, abort
+                logger.error(f"Too many comment failures: {failed_comments}/{len(formatted_comments)}. Aborting.")
+                success = False
+                break
+    
+    # Log summary
+    if success:
+        success_count = len(formatted_comments) - failed_comments
+        logger.info(f"Successfully created {success_count}/{len(formatted_comments)} individual review comments")
+    else:
+        logger.error(f"Failed to create review comments: {failed_comments}/{len(formatted_comments)} comments failed")
+    
+    return success
 
 
 def create_review_with_individual_comments(repo, pr_number, token, comments, commit_sha):

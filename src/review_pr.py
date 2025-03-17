@@ -685,6 +685,7 @@ def review_pr(config_path: Optional[str] = None, verbose: bool = False) -> bool:
                 file_section_matches = list(re.finditer(alt_file_section_pattern, detailed_feedback_text, re.DOTALL))
                 logger.debug(f"Found {len(file_section_matches)} file section matches with alternative pattern")
             
+            # Parse each file section match into a separate comment
             for match in file_section_matches:
                 filename = match.group(1).strip()
                 line_number = int(match.group(2))
@@ -693,6 +694,45 @@ def review_pr(config_path: Optional[str] = None, verbose: bool = False) -> bool:
                 logger.debug(f"Processing file section match: {filename}:{line_number}")
                 logger.debug(f"Content preview: {content[:100]}...")
                 
+                # Check if we need to split the content further (if it has multiple problems for the same file+line)
+                problem_sections = []
+                problem_pattern = re.compile(r'(?:^|\n)(?:Problem|Issue):\s*(.*?)(?:\n\n|\n(?:Problem|Issue|Suggestion|Explanation):|$)', re.DOTALL)
+                problem_matches = list(problem_pattern.finditer(content))
+                
+                # If there are explicit problem sections, split the content into separate comments
+                if problem_matches:
+                    logger.debug(f"Found {len(problem_matches)} problem sections in content for {filename}:{line_number}")
+                    
+                    for i, problem_match in enumerate(problem_matches):
+                        problem_text = problem_match.group(1).strip()
+                        
+                        # Try to find matching suggestion and explanation
+                        suggestion_pattern = re.compile(r'(?:^|\n)Suggestion:\s*(.*?)(?:\n\n|\n(?:Problem|Issue|Explanation):|$)', re.DOTALL)
+                        explanation_pattern = re.compile(r'(?:^|\n)Explanation:\s*(.*?)(?:\n\n|\n(?:Problem|Issue|Suggestion):|$)', re.DOTALL)
+                        
+                        # Search for suggestion and explanation after this problem
+                        start_pos = problem_match.end()
+                        end_pos = len(content)
+                        if i < len(problem_matches) - 1:
+                            end_pos = problem_matches[i+1].start()
+                        
+                        section_content = content[start_pos:end_pos]
+                        
+                        suggestion_match = suggestion_pattern.search(section_content)
+                        explanation_match = explanation_pattern.search(section_content)
+                        
+                        suggestion_text = suggestion_match.group(1).strip() if suggestion_match else ""
+                        explanation_text = explanation_match.group(1).strip() if explanation_match else ""
+                        
+                        # Format as a complete comment
+                        formatted_content = f"Problem: {problem_text}\n\n"
+                        if suggestion_text:
+                            formatted_content += f"Suggestion: {suggestion_text}\n\n"
+                        if explanation_text:
+                            formatted_content += f"Explanation: {explanation_text}\n\n"
+                        
+                        problem_sections.append(formatted_content)
+                
                 if filename in file_line_map:
                     # Find the matching position for this line number
                     matching_lines = [
@@ -700,16 +740,31 @@ def review_pr(config_path: Optional[str] = None, verbose: bool = False) -> bool:
                         for line_num, pos, line_content in file_line_map[filename] 
                         if line_num == line_number
                     ]
+                    
                     if matching_lines:
                         # Use the first matching position
                         _, position, _ = matching_lines[0]
-                        file_sections[f"{filename}:{line_number}"] = {
-                            "path": filename,
-                            "line": line_number,
-                            "position": position,  # Store position separately from line number
-                            "body": content
-                        }
-                        logger.debug(f"Added file section for {filename}:{line_number} at position {position}")
+                        
+                        # If we have split the content into problem sections, create a separate comment for each
+                        if problem_sections:
+                            for i, section in enumerate(problem_sections):
+                                section_key = f"{filename}:{line_number}:{i}"
+                                file_sections[section_key] = {
+                                    "path": filename,
+                                    "line": line_number,
+                                    "position": position,
+                                    "body": section
+                                }
+                                logger.debug(f"Added split file section {i+1}/{len(problem_sections)} for {filename}:{line_number}")
+                        else:
+                            # Add the entire content as a single comment
+                            file_sections[f"{filename}:{line_number}"] = {
+                                "path": filename,
+                                "line": line_number,
+                                "position": position,
+                                "body": content
+                            }
+                            logger.debug(f"Added file section for {filename}:{line_number} at position {position}")
                     else:
                         logger.warning(f"No matching position found for {filename}:{line_number}")
                         # Try to find the closest line number as a fallback
@@ -717,12 +772,27 @@ def review_pr(config_path: Optional[str] = None, verbose: bool = False) -> bool:
                             closest_line = min(file_line_map[filename], key=lambda x: abs(x[0] - line_number))
                             closest_line_num, closest_pos, _ = closest_line
                             logger.info(f"Using closest line {closest_line_num} at position {closest_pos} as fallback")
-                            file_sections[f"{filename}:{closest_line_num}"] = {
-                                "path": filename,
-                                "line": closest_line_num,
-                                "position": closest_pos,
-                                "body": f"[Originally for line {line_number}] {content}"
-                            }
+                            
+                            # If we have split the content into problem sections, create a separate comment for each
+                            if problem_sections:
+                                for i, section in enumerate(problem_sections):
+                                    section_key = f"{filename}:{closest_line_num}:{i}"
+                                    file_sections[section_key] = {
+                                        "path": filename,
+                                        "line": closest_line_num,
+                                        "position": closest_pos,
+                                        "body": f"[Originally for line {line_number}] {section}"
+                                    }
+                                    logger.debug(f"Added split fallback file section {i+1}/{len(problem_sections)} for {filename}:{closest_line_num}")
+                            else:
+                                # Add the entire content as a single comment
+                                file_sections[f"{filename}:{closest_line_num}"] = {
+                                    "path": filename,
+                                    "line": closest_line_num,
+                                    "position": closest_pos,
+                                    "body": f"[Originally for line {line_number}] {content}"
+                                }
+                                logger.debug(f"Added fallback file section for {filename}:{closest_line_num}")
                 else:
                     logger.warning(f"File {filename} not found in file_line_map")
                     # Try to find a similar filename as a fallback
@@ -734,12 +804,27 @@ def review_pr(config_path: Optional[str] = None, verbose: bool = False) -> bool:
                         if file_line_map[similar_file]:
                             first_line = file_line_map[similar_file][0]
                             line_num, pos, _ = first_line
-                            file_sections[f"{similar_file}:{line_num}"] = {
-                                "path": similar_file,
-                                "line": line_num,
-                                "position": pos,
-                                "body": f"[Originally for {filename}:{line_number}] {content}"
-                            }
+                            
+                            # If we have split the content into problem sections, create a separate comment for each
+                            if problem_sections:
+                                for i, section in enumerate(problem_sections):
+                                    section_key = f"{similar_file}:{line_num}:{i}"
+                                    file_sections[section_key] = {
+                                        "path": similar_file,
+                                        "line": line_num,
+                                        "position": pos,
+                                        "body": f"[Originally for {filename}:{line_number}] {section}"
+                                    }
+                                    logger.debug(f"Added split similar file section {i+1}/{len(problem_sections)} for {similar_file}:{line_num}")
+                            else:
+                                # Add the entire content as a single comment
+                                file_sections[f"{similar_file}:{line_num}"] = {
+                                    "path": similar_file,
+                                    "line": line_num,
+                                    "position": pos,
+                                    "body": f"[Originally for {filename}:{line_number}] {content}"
+                                }
+                                logger.debug(f"Added similar file section for {similar_file}:{line_num}")
             
             # Convert file sections to line comments 
             additional_comments = list(file_sections.values())
