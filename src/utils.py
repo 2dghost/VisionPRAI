@@ -245,7 +245,7 @@ def create_review_with_individual_comments(repo: str, pr_number: str, token: str
         try:
             # Get the latest commit on the PR for review
             headers = {
-                "Accept": "application/vnd.github.v3+json",
+                "Accept": "application/vnd.github+json",  # Use standard GitHub API media type
                 "Authorization": f"Bearer {token}",
                 "X-GitHub-Api-Version": "2022-11-28"
             }
@@ -266,52 +266,27 @@ def create_review_with_individual_comments(repo: str, pr_number: str, token: str
                 
             logger.info(f"Latest commit SHA for PR: {head_sha}")
             
-            # First, check for existing reviews
-            existing_reviews_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews"
+            # Start a new review in PENDING state with the latest commit
+            create_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews"
+            create_data = {
+                "commit_id": head_sha,
+                "event": "PENDING"  # Create a draft review
+            }
             
-            logger.info(f"Checking for existing reviews on PR #{pr_number}")
+            logger.info("Creating new pending review")
+            create_response = requests.post(create_url, headers=headers, json=create_data)
+            create_response.raise_for_status()
+            review_data = create_response.json()
+            review_id = review_data.get("id")
             
-            existing_response = requests.get(existing_reviews_url, headers=headers)
-            existing_response.raise_for_status()
-            existing_reviews = existing_response.json()
+            if not review_id:
+                logger.error("Failed to get review ID from response")
+                logger.debug(f"Response data: {review_data}")
+                return False
             
-            # Filter for pending reviews by the bot (assume github-actions[bot])
-            pending_bot_reviews = [
-                review for review in existing_reviews 
-                if review.get("state") == "PENDING" and 
-                review.get("user", {}).get("login") == "github-actions[bot]"
-            ]
+            logger.info(f"Created new review with ID: {review_id}")
             
-            # If we have a pending review, use it; otherwise create a new one
-            if pending_bot_reviews:
-                logger.info(f"Found {len(pending_bot_reviews)} pending bot reviews, using the most recent one")
-                # Use the most recent pending review
-                review_id = pending_bot_reviews[-1].get("id")
-                logger.info(f"Using existing pending review ID: {review_id}")
-            else:
-                # Create a new draft review
-                logger.info("Creating a new draft review")
-                create_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews"
-                
-                # Start a new review with the latest commit
-                create_data = {
-                    "event": "PENDING",
-                    "commit_id": head_sha  # Explicitly set the commit ID to the latest commit
-                }
-                create_response = requests.post(create_url, headers=headers, json=create_data)
-                create_response.raise_for_status()
-                review_data = create_response.json()
-                review_id = review_data.get("id")
-                
-                if not review_id:
-                    logger.error("Failed to get review ID from response")
-                    logger.debug(f"Response data: {review_data}")
-                    return False
-                
-                logger.info(f"Created new review with ID: {review_id}")
-                
-                # Sleep briefly to ensure the review is created before we add comments
-                time.sleep(1)
+            # No need to sleep here as we're explicitly doing API calls in sequence
                 
             # Do we have any comments to add?
             if not comments:
@@ -332,10 +307,7 @@ def create_review_with_individual_comments(repo: str, pr_number: str, token: str
                     logger.warning("No overview text provided either, skipping review submission")
                     return False
             
-            # Now add comments to the review
-            logger.info(f"Adding {len(comments)} comments to review")
-            
-            # Build the review comments by file
+            # Group comments by file for better organization
             comments_by_file = {}
             for comment in comments:
                 file_path = comment.get("path", "unknown")
@@ -343,38 +315,44 @@ def create_review_with_individual_comments(repo: str, pr_number: str, token: str
                     comments_by_file[file_path] = []
                 comments_by_file[file_path].append(comment)
             
+            logger.info(f"Adding {len(comments)} comments to review (across {len(comments_by_file)} files)")
+            
+            # Add all comments to the review
+            add_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews/{review_id}/comments"
+            
             # Process each file's comments
             for file_path, file_comments in comments_by_file.items():
+                logger.info(f"Adding {len(file_comments)} comments for file: {file_path}")
+                
                 for i, comment in enumerate(file_comments):
                     try:
-                        add_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews/{review_id}/comments"
-                        
+                        # Prepare the comment data - critical for correct rendering in Files Changed tab
                         comment_data = {
-                            "path": comment.get("path"),
-                            "position": comment.get("position"),
-                            "body": comment.get("body"),
-                            "line": comment.get("line")
+                            "path": comment.get("path"),  # File path relative to repo root
+                            "body": comment.get("body"),  # Comment content
+                            "line": int(comment.get("line", 1)),  # Line number (required)
+                            "side": comment.get("side", "RIGHT")  # Side (RIGHT for new version)
                         }
                         
-                        # Add side information (default to RIGHT)
-                        if "side" in comment:
-                            comment_data["side"] = comment.get("side")
-                        else:
-                            comment_data["side"] = "RIGHT"
-                            
-                        # Handle multi-line comments if start_line and start_side are provided
+                        # Position is crucial for correct placement - GitHub API needs diff position
+                        if "position" in comment:
+                            comment_data["position"] = comment.get("position")
+                        
+                        # Handle multi-line comments if needed
                         if "start_line" in comment and "start_side" in comment:
-                            comment_data["start_line"] = comment.get("start_line")
+                            comment_data["start_line"] = int(comment.get("start_line"))
                             comment_data["start_side"] = comment.get("start_side")
-
+                        
+                        logger.debug(f"Adding comment {i+1}/{len(file_comments)} for {file_path}: {comment_data}")
+                        
                         # Add the comment to the review
                         add_response = requests.post(add_url, headers=headers, json=comment_data)
                         add_response.raise_for_status()
                         
-                        # Brief sleep to avoid rate limiting
+                        # Brief pause to avoid rate limiting
                         if i > 0 and i % 10 == 0:
                             logger.debug(f"Added {i}/{len(file_comments)} comments for {file_path}, pausing briefly")
-                            time.sleep(1)
+                            time.sleep(0.5)
                     except requests.exceptions.RequestException as e:
                         # Log the error but continue with other comments
                         logger.warning(f"Error adding comment {i+1}/{len(file_comments)} for {file_path}: {str(e)}")
@@ -385,20 +363,20 @@ def create_review_with_individual_comments(repo: str, pr_number: str, token: str
                 logger.debug(f"Completed comments for {file_path}")
                 time.sleep(0.5)
             
-            # Finally, submit the review
+            # Finally, submit the review to publish all comments
             submit_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews/{review_id}/events"
             
             # Prepare the submission data with the body containing the overview text
             submit_data = {
-                "body": overview_text if overview_text else "AI code review",
+                "body": overview_text if overview_text else "AI review comments",
                 "event": "COMMENT"  # Can be APPROVE, REQUEST_CHANGES, or COMMENT
             }
             
-            logger.info("Submitting review with comments")
+            logger.info("Submitting review with all comments")
             submit_response = requests.post(submit_url, headers=headers, json=submit_data)
             submit_response.raise_for_status()
             
-            logger.info("Successfully posted review with comments")
+            logger.info(f"Successfully submitted review with {len(comments)} comments across {len(comments_by_file)} files")
             return True
             
         except requests.exceptions.RequestException as e:
@@ -428,22 +406,30 @@ def create_review_with_individual_comments(repo: str, pr_number: str, token: str
                 return False
 
 
-def parse_diff_for_lines(diff_text: str) -> Dict[str, List[Tuple[int, int, str]]]:
+def parse_diff_for_lines(diff_text: str) -> Dict[str, Dict[int, int]]:
     """
-    Parse a diff to extract file paths and line numbers.
-    Useful for posting line-specific comments.
+    Parse a diff to extract file paths, line numbers, and positions in the diff.
+    Useful for posting line-specific comments in GitHub PR reviews.
     
     Args:
         diff_text: The diff text from GitHub
         
     Returns:
-        Dictionary mapping file paths to list of (line_number, position, line_content) tuples
-        where position is the line's position in the diff
+        Dictionary mapping file paths to dictionaries of {line_number: position}
+        where position is the line's position in the diff (critical for GitHub API)
     """
+    if not diff_text or len(diff_text) < 10:
+        logger.warning("Empty or very small diff received")
+        return {}
+        
     result = {}
     current_file = None
     line_number = 0
-    position = 0  # Track position in the diff (still useful for debugging)
+    position = 0
+    
+    # Log the size of the diff for debugging
+    diff_size = len(diff_text)
+    logger.debug(f"Parsing diff with {diff_size} characters")
     
     # Extract filename and line information from diff
     lines = diff_text.split('\n')
@@ -460,7 +446,7 @@ def parse_diff_for_lines(diff_text: str) -> Dict[str, List[Tuple[int, int, str]]
             path_match = re.match(r'\+\+\+ b/(.*)', line)
             if path_match:
                 current_file = path_match.group(1)
-                result[current_file] = []
+                result[current_file] = {}  # Map line numbers to positions
                 line_number = 0
                 logger.debug(f"Processing file: {current_file}")
             position += 1
@@ -483,21 +469,26 @@ def parse_diff_for_lines(diff_text: str) -> Dict[str, List[Tuple[int, int, str]]
         # Increment position for each line in the diff
         position += 1
         
-        # Skip removal lines (-)
+        # Skip removal lines (-) - they don't exist in the new file
         if line.startswith('-'):
             continue
             
-        # Process addition and context lines
-        if line.startswith('+') or not line.startswith('\\'):  # Skip "No newline" markers
+        # Process addition (+) and context lines (not starting with + or -)
+        if line.startswith('+') or (not line.startswith('\\') and not line.startswith('-')):
             if current_file:
                 line_number += 1
-                content = line[1:] if line.startswith('+') else line
-                # Store line number, position, and content
-                result[current_file].append((line_number, position, content))
+                # Store mapping of line number to position in the diff
+                # This is CRITICAL for GitHub PR review API which uses position
+                result[current_file][line_number] = position
     
     # Log file mapping summary
     for file_path, lines in result.items():
         logger.debug(f"Mapped {len(lines)} lines for file {file_path}")
+    
+    # Print overall stats
+    file_count = len(result)
+    total_lines = sum(len(lines) for lines in result.values())
+    logger.info(f"Parsed diff: {file_count} files with {total_lines} lines total")
     
     return result
 

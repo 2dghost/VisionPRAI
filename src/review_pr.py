@@ -844,269 +844,54 @@ def review_pr(config_path: Optional[str] = None, verbose: bool = False) -> bool:
             logger.info("Processing line-specific comments", 
                        context={"repo": repo, "pr_number": pr_number})
             
-            # Parse the diff to get file/line mapping
-            file_line_map = parse_diff_for_lines(diff)
+            # Parse the diff to map line numbers to positions
+            logger.info("Parsing diff to map line numbers to positions in the diff")
+            file_line_positions = parse_diff_for_lines(diff)
             
-            # First use the standard extractor for explicitly marked line comments
-            comment_extractor = CommentExtractor(config_path=config_path or "config.yaml")
-            standard_line_comments = comment_extractor.extract_line_comments(review_text, file_line_map)
-            logger.debug(f"Extracted {len(standard_line_comments)} standard line comments")
-            
-            # Now extract file-specific sections and convert them to line comments for each file
-            file_sections = {}
-            
-            # Look for comments in both the main review and the Detailed Feedback section
-            detailed_feedback_pattern = r'(?:^|\n)## Detailed Feedback\s*\n(.*?)(?=\n##|\Z)'
-            detailed_feedback_match = re.search(detailed_feedback_pattern, review_text, re.DOTALL)
-            
-            # If we found a Detailed Feedback section, extract comments from there
-            detailed_feedback_text = ""
-            if detailed_feedback_match:
-                detailed_feedback_text = detailed_feedback_match.group(1).strip()
-                logger.debug("Detailed Feedback section found")
+            if not file_line_positions:
+                logger.warning("Could not parse any line positions from diff. Review comments may not appear on specific lines.")
             else:
-                # If no Detailed Feedback section, use the whole review text
-                detailed_feedback_text = review_text
-                logger.warning("No Detailed Feedback section found, using entire review text")
+                logger.info(f"Successfully parsed positions for {len(file_line_positions)} files")
+            
+            # Extract comments from the review
+            logger.info("Extracting comments from AI review")
+            comment_extractor = CommentExtractor()
+            valid_comments = comment_extractor.extract_comments(review_text, file_line_positions)
+            
+            logger.info(f"Extracted {len(valid_comments)} valid comments from review")
+            
+            if valid_comments:
+                # Log statistics about comments per file
+                comments_by_file = {}
+                for comment in valid_comments:
+                    file_path = comment.get("path", "unknown")
+                    if file_path not in comments_by_file:
+                        comments_by_file[file_path] = []
+                    comments_by_file[file_path].append(comment)
                 
-            # Also check for a File-Specific Comments section
-            file_comments_pattern = r'(?:^|\n)## File-Specific Comments\s*\n(.*?)(?=\n##|\Z)'
-            file_comments_match = re.search(file_comments_pattern, review_text, re.DOTALL)
-            
-            if file_comments_match:
-                file_comments_text = file_comments_match.group(1).strip()
-                logger.debug("File-Specific Comments section found")
-                # Append to detailed feedback text
-                detailed_feedback_text += "\n\n" + file_comments_text
-            
-            # Extract file-specific comments
-            file_section_pattern = r'(?:^|\n)### ([^\n:]+):(\d+)\s*\n(.*?)(?=\n### [^\n:]+:\d+|\Z)'
-            
-            file_section_matches = list(re.finditer(file_section_pattern, detailed_feedback_text, re.DOTALL))
-            logger.debug(f"Found {len(file_section_matches)} file section matches")
-            
-            # Log the detailed feedback text for debugging
-            logger.debug(f"Detailed feedback text (first 1000 chars): {detailed_feedback_text[:1000]}")
-            
-            # If no file section matches were found, try a more lenient pattern
-            if not file_section_matches:
-                logger.warning("No file section matches found with primary pattern, trying alternative pattern")
-                alt_file_section_pattern = r'(?:^|\n)(?:In|File|At) ([^\n:,]+)[,:]? (?:line|at line) (\d+)[:]?\s*\n(.*?)(?=\n(?:In|File|At) [^\n:,]+[,:]? (?:line|at line) \d+[:]?|\Z)'
-                file_section_matches = list(re.finditer(alt_file_section_pattern, detailed_feedback_text, re.DOTALL))
-                logger.debug(f"Found {len(file_section_matches)} file section matches with alternative pattern")
-            
-            # Parse each file section match into a separate comment
-            for match in file_section_matches:
-                filename = match.group(1).strip()
-                line_number = int(match.group(2))
-                content = match.group(3).strip()
+                logger.info(f"Comment distribution across {len(comments_by_file)} files:")
+                for file_path, comments in comments_by_file.items():
+                    logger.info(f"  - {file_path}: {len(comments)} comments")
                 
-                logger.debug(f"Processing file section match: {filename}:{line_number}")
-                logger.debug(f"Content preview: {content[:100]}...")
-                
-                # Check if we need to split the content further (if it has multiple problems for the same file+line)
-                problem_sections = []
-                problem_pattern = re.compile(r'(?:^|\n)(?:Problem|Issue):\s*(.*?)(?:\n\n|\n(?:Problem|Issue|Suggestion|Explanation):|$)', re.DOTALL)
-                problem_matches = list(problem_pattern.finditer(content))
-                
-                # If there are explicit problem sections, split the content into separate comments
-                if problem_matches:
-                    logger.debug(f"Found {len(problem_matches)} problem sections in content for {filename}:{line_number}")
-                    
-                    for i, problem_match in enumerate(problem_matches):
-                        problem_text = problem_match.group(1).strip()
-                        
-                        # Try to find matching suggestion and explanation
-                        suggestion_pattern = re.compile(r'(?:^|\n)Suggestion:\s*(.*?)(?:\n\n|\n(?:Problem|Issue|Explanation):|$)', re.DOTALL)
-                        explanation_pattern = re.compile(r'(?:^|\n)Explanation:\s*(.*?)(?:\n\n|\n(?:Problem|Issue|Suggestion):|$)', re.DOTALL)
-                        
-                        # Search for suggestion and explanation after this problem
-                        start_pos = problem_match.end()
-                        end_pos = len(content)
-                        if i < len(problem_matches) - 1:
-                            end_pos = problem_matches[i+1].start()
-                        
-                        section_content = content[start_pos:end_pos]
-                        
-                        suggestion_match = suggestion_pattern.search(section_content)
-                        explanation_match = explanation_pattern.search(section_content)
-                        
-                        suggestion_text = suggestion_match.group(1).strip() if suggestion_match else ""
-                        explanation_text = explanation_match.group(1).strip() if explanation_match else ""
-                        
-                        # Format as a complete comment
-                        formatted_content = f"Problem: {problem_text}\n\n"
-                        if suggestion_text:
-                            formatted_content += f"Suggestion: {suggestion_text}\n\n"
-                        if explanation_text:
-                            formatted_content += f"Explanation: {explanation_text}\n\n"
-                        
-                        problem_sections.append(formatted_content)
-                
-                if filename in file_line_map:
-                    # Find the matching position for this line number
-                    matching_lines = [
-                        (line_num, pos, line_content) 
-                        for line_num, pos, line_content in file_line_map[filename] 
-                        if line_num == line_number
-                    ]
-                    
-                    if matching_lines:
-                        # Use the first matching position
-                        _, position, _ = matching_lines[0]
-                        
-                        # If we have split the content into problem sections, create a separate comment for each
-                        if problem_sections:
-                            for i, section in enumerate(problem_sections):
-                                section_key = f"{filename}:{line_number}:{i}"
-                                file_sections[section_key] = {
-                                    "path": filename,
-                                    "line": line_number,
-                                    "position": position,
-                                    "body": section
-                                }
-                                logger.debug(f"Added split file section {i+1}/{len(problem_sections)} for {filename}:{line_number}")
-                        else:
-                            # Add the entire content as a single comment
-                            file_sections[f"{filename}:{line_number}"] = {
-                                "path": filename,
-                                "line": line_number,
-                                "position": position,
-                                "body": content
-                            }
-                            logger.debug(f"Added file section for {filename}:{line_number} at position {position}")
-                    else:
-                        logger.warning(f"No matching position found for {filename}:{line_number}")
-                        # Try to find the closest line number as a fallback
-                        if file_line_map[filename]:
-                            closest_line = min(file_line_map[filename], key=lambda x: abs(x[0] - line_number))
-                            closest_line_num, closest_pos, _ = closest_line
-                            logger.info(f"Using closest line {closest_line_num} at position {closest_pos} as fallback")
-                            
-                            # If we have split the content into problem sections, create a separate comment for each
-                            if problem_sections:
-                                for i, section in enumerate(problem_sections):
-                                    section_key = f"{filename}:{closest_line_num}:{i}"
-                                    file_sections[section_key] = {
-                                        "path": filename,
-                                        "line": closest_line_num,
-                                        "position": closest_pos,
-                                        "body": f"[Originally for line {line_number}] {section}"
-                                    }
-                                    logger.debug(f"Added split fallback file section {i+1}/{len(problem_sections)} for {filename}:{closest_line_num}")
-                            else:
-                                # Add the entire content as a single comment
-                                file_sections[f"{filename}:{closest_line_num}"] = {
-                                    "path": filename,
-                                    "line": closest_line_num,
-                                    "position": closest_pos,
-                                    "body": f"[Originally for line {line_number}] {content}"
-                                }
-                                logger.debug(f"Added fallback file section for {filename}:{closest_line_num}")
-                else:
-                    logger.warning(f"File {filename} not found in file_line_map")
-                    # Try to find a similar filename as a fallback
-                    similar_files = [f for f in file_line_map.keys() if filename in f or f in filename]
-                    if similar_files:
-                        similar_file = similar_files[0]
-                        logger.info(f"Using similar file {similar_file} as fallback")
-                        # Use the first line of the similar file
-                        if file_line_map[similar_file]:
-                            first_line = file_line_map[similar_file][0]
-                            line_num, pos, _ = first_line
-                            
-                            # If we have split the content into problem sections, create a separate comment for each
-                            if problem_sections:
-                                for i, section in enumerate(problem_sections):
-                                    section_key = f"{similar_file}:{line_num}:{i}"
-                                    file_sections[section_key] = {
-                                        "path": similar_file,
-                                        "line": line_num,
-                                        "position": pos,
-                                        "body": f"[Originally for {filename}:{line_number}] {section}"
-                                    }
-                                    logger.debug(f"Added split similar file section {i+1}/{len(problem_sections)} for {similar_file}:{line_num}")
-                            else:
-                                # Add the entire content as a single comment
-                                file_sections[f"{similar_file}:{line_num}"] = {
-                                    "path": similar_file,
-                                    "line": line_num,
-                                    "position": pos,
-                                    "body": f"[Originally for {filename}:{line_number}] {content}"
-                                }
-                                logger.debug(f"Added similar file section for {similar_file}:{line_num}")
-            
-            # Convert file sections to line comments 
-            additional_comments = list(file_sections.values())
-            logger.debug(f"Added {len(additional_comments)} additional comments from file sections")
-            
-            # Combine standard and file-section comments
-            all_comments = standard_line_comments + additional_comments
-            
-            # Post line comments if any were found
-            if all_comments:
-                logger.info(f"Posting {len(all_comments)} line-specific comments",
-                           context={"comments_count": len(all_comments)})
+                # Post line comments
                 try:
-                    # Ensure all comments have the required fields for the GitHub API
-                    for comment in all_comments:
-                        # GitHub requires these fields: path, body, line, side
-                        if "path" not in comment or "body" not in comment:
-                            logger.error(f"Comment missing required fields: {comment}")
-                            continue
-                            
-                        # Ensure line is an integer
-                        if "line" in comment:
-                            comment["line"] = int(comment["line"])
-                        else:
-                            logger.warning(f"Comment missing line number for {comment.get('path', 'unknown file')}")
-                            comment["line"] = 1  # Default to line 1 if no line specified
-                        
-                        # Ensure side is always RIGHT (for new version)
-                        comment["side"] = "RIGHT"
-                        
-                        # For multi-line comments, ensure start_side is set if start_line is present
-                        if "start_line" in comment:
-                            comment["start_line"] = int(comment["start_line"]) 
-                            comment["start_side"] = "RIGHT"
+                    logger.info("Posting line comments with overview text (draft review approach)")
+                    line_comment_success = post_line_comments(
+                        repo, 
+                        pr_number, 
+                        github_token, 
+                        valid_comments,
+                        overview_text=review_text  # Pass the review text as the overview
+                    )
                     
-                    # Remove any comments that don't have the required fields
-                    valid_comments = [c for c in all_comments if "path" in c and "body" in c and "line" in c and "side" in c]
-                    
-                    if len(valid_comments) < len(all_comments):
-                        logger.warning(f"Filtered out {len(all_comments) - len(valid_comments)} invalid comments")
-                    
-                    # Log sample comments for debugging
-                    if valid_comments:
-                        sample = valid_comments[0]
-                        logger.debug(f"Sample comment: path={sample['path']}, line={sample['line']}, side={sample['side']}")
-                        
-                        # Log number of comments per file
-                        file_counts = {}
-                        for c in valid_comments:
-                            file_counts[c["path"]] = file_counts.get(c["path"], 0) + 1
-                        logger.debug(f"Comments by file: {file_counts}")
-                    
-                    # Post the comments
-                    if valid_comments:
-                        logger.info("Posting line comments with overview_text - this should use the draft review approach")
-                        line_comment_success = post_line_comments(
-                            repo, 
-                            pr_number, 
-                            github_token, 
-                            valid_comments,
-                            overview_text=overview_text  # Pass the overview text
-                        )
-                        if not line_comment_success:
-                            logger.error("Failed to post line comments - API call returned False",
-                                        context={"repo": repo, "pr_number": pr_number})
+                    if line_comment_success:
+                        logger.info("Successfully posted line comments")
                     else:
-                        logger.warning("No valid comments to post")
+                        logger.error("Failed to post line comments")
                 except Exception as e:
-                    logger.error(f"Exception while posting line comments: {str(e)}", exc_info=True)
+                    logger.error(f"Error posting line comments: {str(e)}", exc_info=True)
             else:
-                logger.info("No line-specific comments found in the review",
-                           context={"repo": repo, "pr_number": pr_number})
+                logger.warning("No valid comments extracted from review")
         except CommentExtractionError as e:
             logger.error(f"Error extracting line comments: {str(e)}",
                         context={"error_code": e.error_code, "repo": repo, "pr_number": pr_number},

@@ -323,160 +323,109 @@ class CommentExtractor:
         return comment_text
 
     @with_context
-    def extract_line_comments(self, review_text: str, file_line_map: Dict[str, List[Tuple[int, int, str]]]) -> List[Dict[str, Any]]:
+    def extract_comments(self, review_text: str, file_line_positions: Dict[str, Dict[int, int]]) -> List[Dict[str, Any]]:
         """
-        Extract line comments from the review text.
+        Extract line-specific comments from review text using the new position mapping format.
         
         Args:
-            review_text: The review text containing comments
-            file_line_map: Mapping of file paths to line information
+            review_text: The text containing comments
+            file_line_positions: Mapping of file paths to {line_number: position} dictionaries
             
         Returns:
-            List of comment dictionaries with keys: path, line, position, body
+            A list of comment dictionaries with path, line, position, and body keys
+            
+        Raises:
+            CommentExtractionError: If comment extraction fails
         """
-        all_comments = []
-        
-        if not file_line_map:
-            self.logger.warning("No files in the diff, can't extract line comments")
+        if not review_text:
+            self.logger.warning("Empty review text provided")
+            return []
             
-            # DEBUG: Print review text to check if it contains comments
-            if review_text:
-                preview = review_text[:500] + "..." if len(review_text) > 500 else review_text
-                self.logger.debug(f"Review text preview: {preview}")
-                
-                # Try to extract comments directly without the file_line_map filtering
-                # This will create file-level comments at least to show feedback
-                try:
-                    self.logger.info("Attempting to extract file-level comments from review")
-                    # Look for file sections like "### file.py"
-                    file_pattern = r'(?:^|\n)(?:#+|\*+) ?(?:File|In|For)[ :]+([^\n:]+)(?::|[\s\n])'
-                    file_matches = list(re.finditer(file_pattern, review_text, re.IGNORECASE))
-                    
-                    if file_matches:
-                        self.logger.info(f"Found {len(file_matches)} potential file references")
-                        for i, match in enumerate(file_matches):
-                            file_name = match.group(1).strip()
-                            self.logger.debug(f"Found file reference: {file_name}")
-                            
-                            # Extract the section content until the next file heading or end
-                            start_pos = match.end()
-                            end_pos = len(review_text)
-                            if i < len(file_matches) - 1:
-                                end_pos = file_matches[i+1].start()
-                            
-                            section_content = review_text[start_pos:end_pos].strip()
-                            self.logger.debug(f"Section content length: {len(section_content)}")
-                            
-                            if section_content:
-                                # Create a file-level comment
-                                comment = {
-                                    "path": file_name,
-                                    "body": f"# Review for {file_name}\n\n{section_content}",
-                                    "position": 1,  # Default position at start of file
-                                    "line": 1,      # Default to first line
-                                    "side": "RIGHT" # Comment on the right side (new version)
-                                }
-                                all_comments.append(comment)
-                                self.logger.info(f"Added file-level comment for {file_name}")
-                
-                    # If no file sections were found, create a general PR comment
-                    if not file_matches and len(review_text) > 50:
-                        # Find the most important files in the PR review
-                        potential_files = re.findall(r'`([^`]+\.[a-zA-Z0-9]+)`', review_text)
-                        
-                        if potential_files:
-                            file_name = potential_files[0]  # Use the first mentioned file
-                            self.logger.info(f"No file sections found, but referenced file: {file_name}")
-                            
-                            # Create a general PR comment
-                            comment = {
-                                "path": file_name,
-                                "body": "# General PR Review\n\n" + review_text,
-                                "position": 1,
-                                "line": 1,
-                                "side": "RIGHT"
-                            }
-                            all_comments.append(comment)
-                            self.logger.info("Added general PR comment to most referenced file")
-                        else:
-                            self.logger.warning("No file references found in review, can't create comments")
-                except Exception as e:
-                    self.logger.error(f"Error extracting file-level comments: {str(e)}")
+        if not file_line_positions:
+            self.logger.warning("No file line positions provided, comments may not be correctly linked to lines")
             
-            return all_comments
+        # First extract file-specific comment sections
+        self.logger.info("Extracting file-specific comments from review text")
         
-        # Log the files available in the diff
-        self.logger.debug(f"Files in diff: {list(file_line_map.keys())}")
+        # Match explicit file comment patterns (e.g. ### file.py:123)
+        comment_matches = self.match_comment_patterns(review_text)
+        self.logger.info(f"Found {len(comment_matches)} potential comment matches")
         
-        # GitHub-style PR review comments: ### filename.ext:line_number
-        github_pattern = re.compile(r'### ([^:\n]+):(\d+)\s*\n(.*?)(?=\n### [^:\n]+:\d+|\Z)', re.DOTALL)
+        # Extract and validate comments
+        valid_comments = []
         
-        # Standard file:line pattern: file.py:10: comment
-        standard_pattern = re.compile(r'([^:\s]+\.[a-zA-Z0-9]+):(\d+)(?:[:,]\s*|\s+-\s*)(.*?)(?=\n\n|\n[^\n]|$)', re.DOTALL)
-        
-        # Descriptive pattern: In file.py on line 10: comment
-        descriptive_pattern = re.compile(r'(?:In\s+)?(?:`)?([^:`\s]+\.[a-zA-Z0-9]+)(?:`)?(?:,| on)?\s+(?:line\s+)?(\d+)(?:\s*:|\s*-\s*|\s+)(.*?)(?=\n\n|\n[^\s\n]|$)', re.DOTALL)
-        
-        # File reference pattern: In the file "filename.py" at line 10: comment
-        file_ref_pattern = re.compile(r'In\s+(?:the\s+)?file\s+[`\'"]?([^:`\'"]+)[`\'"]?\s+(?:at|on)\s+line\s+(\d+)(?:\s*:|\s*-\s*)(.*?)(?=\n\n|\n[^\s\n]|$)', re.DOTALL)
-        
-        # Code block with filename: ```lang:filename.py:10
-        code_block_pattern = re.compile(r'```(?:[a-zA-Z0-9]+:)?([^:]+):(\d+)[\s\S]*?```\s*(.*?)(?=\n\n|\n[^\s\n]|$)', re.DOTALL)
-        
-        # Collect all pattern matches
-        patterns_and_names = [
-            (github_pattern, "GitHub-style"),
-            (standard_pattern, "standard file:line"),
-            (descriptive_pattern, "descriptive"),
-            (file_ref_pattern, "file reference"),
-            (code_block_pattern, "code block")
-        ]
-        
-        all_matches = []
-        for pattern, name in patterns_and_names:
-            matches = list(pattern.finditer(review_text))
-            self.logger.debug(f"Found {len(matches)} {name} matches")
-            all_matches.extend([(match, name) for match in matches])
-        
-        # Sort matches by their start position in the text
-        all_matches.sort(key=lambda x: x[0].start())
-        
-        # Extract comments
-        comments = []
-        
-        for match, pattern_name in all_matches:
-            file_path = match.group(1).strip()
-            try:
-                line_num = int(match.group(2))
-                content = match.group(3).strip()
-                
-                # Normalize and verify the file path
-                normalized_path = self.normalize_file_path(file_path)
-                actual_path = self.find_matching_file_path(normalized_path, file_line_map)
-                
-                # Validate and adjust line number if needed
-                valid_line = self.validate_line_number(actual_path, line_num, file_line_map)
-                if valid_line != line_num:
-                    self.logger.debug(f"Adjusted line number for {actual_path} from {line_num} to {valid_line}")
-                    line_num = valid_line
-                
-                # Create the comment
-                comment = {
-                    "path": actual_path,
-                    "line": line_num,
-                    "body": content,
-                    "pattern": pattern_name  # For debugging
-                }
-                
-                self.logger.debug(f"Extracted comment for {actual_path}:{line_num} using {pattern_name} pattern")
-                comments.append(comment)
-                
-            except (ValueError, IndexError) as e:
-                self.logger.warning(f"Failed to parse comment match: {e}")
+        for match in comment_matches:
+            file_path = match.get("file_path", "")
+            line_num = match.get("line_number", 0)
+            
+            # Normalize the file path
+            file_path = self.normalize_file_path(file_path)
+            
+            # Find the matching file path in our map
+            if file_path not in file_line_positions:
+                # Try to find a similar file path
+                file_path = self.find_matching_file_path(file_path, file_line_positions)
+                if not file_path:
+                    self.logger.warning(f"No matching file found for {match.get('file_path', 'unknown')}")
+                    continue
+            
+            # Extract the comment text associated with this match
+            comment_text = self.extract_comment_text(review_text, match)
+            if not comment_text:
+                self.logger.warning(f"Empty comment text for {file_path}:{line_num}")
                 continue
+                
+            # Get position from our mapping
+            if line_num in file_line_positions[file_path]:
+                position = file_line_positions[file_path][line_num]
+                self.logger.debug(f"Found position {position} for {file_path}:{line_num}")
+            else:
+                # Try to find the nearest line number with a position
+                nearest_line = self.find_nearest_line(line_num, file_line_positions[file_path])
+                if nearest_line is None:
+                    self.logger.warning(f"No position found for {file_path}:{line_num}")
+                    continue
+                    
+                position = file_line_positions[file_path][nearest_line]
+                self.logger.info(f"Using nearest line {nearest_line} with position {position} for {file_path}:{line_num}")
+                line_num = nearest_line  # Update line number to the one we found
+            
+            # Create comment object
+            comment = {
+                "path": file_path,
+                "line": line_num,
+                "position": position,
+                "body": comment_text,
+                "side": "RIGHT"  # Commenting on the new version
+            }
+            
+            self.logger.debug(f"Added comment for {file_path}:{line_num} with position {position}")
+            valid_comments.append(comment)
+            
+        self.logger.info(f"Extracted {len(valid_comments)} validated comments from {len(comment_matches)} matches")
+        return valid_comments
+
+    def find_nearest_line(self, target_line: int, line_positions: Dict[int, int]) -> Optional[int]:
+        """
+        Find the nearest line number in the map to the target line.
         
-        self.logger.info(f"Extracted {len(comments)} line-specific comments from review text")
-        return comments
+        Args:
+            target_line: The line number to find
+            line_positions: Dictionary mapping line numbers to positions
+            
+        Returns:
+            The nearest line number or None if no lines are available
+        """
+        if not line_positions:
+            return None
+            
+        if target_line in line_positions:
+            return target_line
+            
+        # Find the closest line by absolute difference
+        line_numbers = list(line_positions.keys())
+        nearest_line = min(line_numbers, key=lambda x: abs(x - target_line))
+        return nearest_line
 
 
 # Legacy function for backward compatibility
