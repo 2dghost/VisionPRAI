@@ -15,7 +15,7 @@ model:
   endpoint: "https://api.anthropic.com/v1/messages"
   
   # Model Name
-  model: "claude-3-sonnet-20240229"
+  model: "claude-3-sonnet"
   
   # Maximum tokens to generate
   max_tokens: 4000
