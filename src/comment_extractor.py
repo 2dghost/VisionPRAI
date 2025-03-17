@@ -307,12 +307,19 @@ class CommentExtractor:
                             )
                             self.logger.info(f"Converted code block to suggestion for {file_path}:{line_num}")
                     
-                    comments.append({
+                    # Create the comment with both line and position for API flexibility
+                    comment_data = {
                         "path": file_path,
                         "line": line_num,
-                        "position": position,
+                        "side": "RIGHT",  # Always comment on the new version
                         "body": content
-                    })
+                    }
+                    
+                    # Include position as a fallback for older API versions
+                    if position is not None:
+                        comment_data["position"] = position
+                    
+                    comments.append(comment_data)
                     self.logger.debug(f"Added comment for {file_path}:{line_num} at position {position}")
                 else:
                     self.logger.warning(f"Could not find position for {file_path}:{line_num}, trying closest line")
@@ -324,6 +331,7 @@ class CommentExtractor:
                         comments.append({
                             "path": file_path,
                             "line": closest_line_num,
+                            "side": "RIGHT",
                             "position": closest_pos,
                             "body": f"[Originally for line {line_num}] {content}"
                         })
@@ -349,15 +357,19 @@ class CommentExtractor:
                         line_num = int(match.group(2))
                         content = match.group(3).strip()
                         
-                        # Skip if we already have a comment for this file and line
-                        if any(c["path"] == file_path and c["line"] == line_num for c in comments):
-                            continue
-                        
                         self.logger.debug(f"Processing alternative match: {file_path}:{line_num}")
                         
                         # Check if the file exists in the diff
                         if not self.validate_file_path(file_path, file_line_map):
-                            continue
+                            self.logger.warning(f"File {file_path} not found in diff, checking for similar files")
+                            # Try to find a similar file name
+                            similar_files = [f for f in file_line_map.keys() if f.endswith(file_path) or file_path.endswith(f)]
+                            if similar_files:
+                                file_path = similar_files[0]
+                                self.logger.info(f"Using similar file {file_path} instead")
+                            else:
+                                self.logger.warning(f"No similar file found for {file_path}, skipping comment")
+                                continue
                         
                         # Find the corresponding position in the diff
                         position = None
@@ -367,88 +379,104 @@ class CommentExtractor:
                                 break
                         
                         if position is not None:
-                            # Check if the content contains a code block and convert to suggestion if needed
-                            code_block_pattern = r'```(?:\w+)?\n(.*?)```'
-                            code_block_match = re.search(code_block_pattern, content, re.DOTALL)
-                            if code_block_match:
-                                code_block = code_block_match.group(1).strip()
-                                # Check if it's already a suggestion block
-                                if not code_block_match.group(0).startswith("```suggestion"):
-                                    # Replace the code block with a suggestion block
-                                    content = content.replace(
-                                        code_block_match.group(0),
-                                        f"```suggestion\n{code_block}\n```"
-                                    )
-                                    self.logger.info(f"Converted code block to suggestion for {file_path}:{line_num}")
-                            
-                            comments.append({
+                            # Create the comment with both line and position for API flexibility
+                            comment_data = {
                                 "path": file_path,
                                 "line": line_num,
-                                "position": position,
+                                "side": "RIGHT",
                                 "body": content
-                            })
+                            }
+                            
+                            # Include position as a fallback for older API versions
+                            if position is not None:
+                                comment_data["position"] = position
+                                
+                            comments.append(comment_data)
                             self.logger.debug(f"Added comment for {file_path}:{line_num} at position {position}")
+                        else:
+                            self.logger.warning(f"Could not find position for {file_path}:{line_num}, trying closest line")
+                            # Try to find the closest line number
+                            if file_line_map[file_path]:
+                                closest_line = min(file_line_map[file_path], key=lambda x: abs(x[0] - line_num))
+                                closest_line_num, closest_pos, _ = closest_line
+                                self.logger.info(f"Using closest line {closest_line_num} at position {closest_pos}")
+                                comments.append({
+                                    "path": file_path,
+                                    "line": closest_line_num,
+                                    "side": "RIGHT",
+                                    "position": closest_pos,
+                                    "body": f"[Originally for line {line_num}] {content}"
+                                })
             
-            # Look for recommendations section and extract any code suggestions there
-            recommendations_pattern = r'## Recommendations\s*\n(.*?)(?=\n##|\Z)'
-            recommendations_match = re.search(recommendations_pattern, review_text, re.DOTALL)
-            
-            if recommendations_match:
-                recommendations_text = recommendations_match.group(1).strip()
-                self.logger.debug("Found Recommendations section, checking for code suggestions")
+            # Process standard pattern matches
+            for match in matches:
+                file_path = match["file"]
+                line_num = match["line"]
                 
-                # Look for file-specific comments in the recommendations section
-                rec_file_matches = list(re.finditer(primary_pattern, recommendations_text, re.DOTALL))
-                self.logger.debug(f"Found {len(rec_file_matches)} file-specific comments in recommendations")
+                # Skip if we already have a comment for this file and line
+                if any(c["path"] == file_path and c["line"] == line_num for c in comments):
+                    self.logger.debug(f"Skipping duplicate comment for {file_path}:{line_num}")
+                    continue
                 
-                for match in rec_file_matches:
-                    file_path = match.group(1).strip()
-                    line_num = int(match.group(2))
-                    content = match.group(3).strip()
-                    
-                    # Skip if we already have a comment for this file and line
-                    if any(c["path"] == file_path and c["line"] == line_num for c in comments):
+                # Extract comment text
+                comment_text = self.extract_comment_text(review_text, match)
+                
+                # Validate file path
+                if not self.validate_file_path(file_path, file_line_map):
+                    self.logger.warning(f"File {file_path} not found in diff, checking for similar files")
+                    # Try to find a similar file name
+                    similar_files = [f for f in file_line_map.keys() if f.endswith(file_path) or file_path.endswith(f)]
+                    if similar_files:
+                        file_path = similar_files[0]
+                        self.logger.info(f"Using similar file {file_path} instead")
+                    else:
+                        self.logger.warning(f"No similar file found for {file_path}, skipping comment")
                         continue
+                
+                # Find the corresponding position in the diff
+                position = None
+                for line, pos, _ in file_line_map[file_path]:
+                    if line == line_num:
+                        position = pos
+                        break
+                
+                if position is not None:
+                    # Create the comment with both line and position for API flexibility
+                    comment_data = {
+                        "path": file_path,
+                        "line": line_num,
+                        "side": "RIGHT",
+                        "body": comment_text
+                    }
                     
-                    # Process the same way as primary matches
-                    if self.validate_file_path(file_path, file_line_map):
-                        position = None
-                        for line, pos, _ in file_line_map[file_path]:
-                            if line == line_num:
-                                position = pos
-                                break
+                    # Include position as a fallback for older API versions
+                    if position is not None:
+                        comment_data["position"] = position
                         
-                        if position is not None:
-                            # Check for suggestion blocks
-                            suggestion_pattern = r'```suggestion\n(.*?)```'
-                            has_suggestion = re.search(suggestion_pattern, content, re.DOTALL)
-                            
-                            if not has_suggestion:
-                                code_block_pattern = r'```(?:\w+)?\n(.*?)```'
-                                code_block_match = re.search(code_block_pattern, content, re.DOTALL)
-                                if code_block_match:
-                                    code_block = code_block_match.group(1).strip()
-                                    content = content.replace(
-                                        code_block_match.group(0),
-                                        f"```suggestion\n{code_block}\n```"
-                                    )
-                            
-                            comments.append({
-                                "path": file_path,
-                                "line": line_num,
-                                "position": position,
-                                "body": content
-                            })
-                            self.logger.debug(f"Added recommendation comment for {file_path}:{line_num}")
+                    comments.append(comment_data)
+                    self.logger.debug(f"Added comment for {file_path}:{line_num} at position {position}")
+                else:
+                    self.logger.warning(f"Could not find position for {file_path}:{line_num}, trying closest line")
+                    # Try to find the closest line number
+                    if file_line_map[file_path]:
+                        closest_line = min(file_line_map[file_path], key=lambda x: abs(x[0] - line_num))
+                        closest_line_num, closest_pos, _ = closest_line
+                        self.logger.info(f"Using closest line {closest_line_num} at position {closest_pos}")
+                        comments.append({
+                            "path": file_path,
+                            "line": closest_line_num,
+                            "side": "RIGHT",
+                            "position": closest_pos,
+                            "body": f"[Originally for line {line_num}] {comment_text}"
+                        })
             
-            self.logger.info(f"Extracted {len(comments)} line comments total")
+            self.logger.info(f"Extracted {len(comments)} line-specific comments")
             return comments
             
         except Exception as e:
-            raise CommentExtractionError(
-                f"Failed to extract line comments: {str(e)}",
-                error_code="COMMENT_EXTRACTION_FAILED"
-            ) from e
+            error_message = f"Failed to extract line comments: {str(e)}"
+            self.logger.error(error_message, exc_info=True)
+            raise CommentExtractionError(error_message, error_code="EXTRACT_LINE_COMMENTS_ERROR") from e
 
 
 # Legacy function for backward compatibility

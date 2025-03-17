@@ -615,6 +615,20 @@ def review_pr(config_path: Optional[str] = None, verbose: bool = False) -> bool:
                 logger.info(f"Posting {len(all_comments)} line-specific comments",
                            context={"comments_count": len(all_comments)})
                 try:
+                    # Ensure all comments have the required fields for the GitHub API
+                    for comment in all_comments:
+                        # Make sure line is an integer
+                        if "line" in comment:
+                            comment["line"] = int(comment["line"])
+                        
+                        # Ensure we have a side parameter for line comments
+                        if "line" in comment and "side" not in comment:
+                            comment["side"] = "RIGHT"
+                            
+                        # For multi-line comments, ensure start_side is set if start_line is present
+                        if "start_line" in comment and "start_side" not in comment:
+                            comment["start_side"] = "RIGHT"
+                    
                     line_comment_success = post_line_comments(repo, pr_number, github_token, all_comments)
                     if not line_comment_success:
                         logger.error("Failed to post line comments - API call returned False",

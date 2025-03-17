@@ -380,18 +380,27 @@ def post_line_comments(
         
         formatted_comment = {
             "path": comment["path"],
-            "body": body
+            "body": body,
+            "line": int(comment.get("line", 1)),  # Ensure line is an integer
+            "side": "RIGHT"  # Comment on the new version of the file
         }
         
-        # Use position if available, otherwise use line/side
-        if "position" in comment:
+        # For multi-line comments, add start_line and start_side if available
+        if "start_line" in comment:
+            formatted_comment["start_line"] = int(comment["start_line"])
+            formatted_comment["start_side"] = comment.get("start_side", "RIGHT")
+            
+        # Only use position as a fallback for older API compatibility
+        if "position" in comment and "line" not in comment:
             formatted_comment["position"] = comment["position"]
+            # Remove line and side if using position
+            if "line" in formatted_comment:
+                del formatted_comment["line"]
+            if "side" in formatted_comment:
+                del formatted_comment["side"]
             logger.debug(f"Using position {comment['position']} for comment on {comment['path']}")
         else:
-            # Use line and side parameters (newer API)
-            formatted_comment["line"] = comment["line"]
-            formatted_comment["side"] = "RIGHT"  # Comment on the new version of the file
-            logger.debug(f"Using line {comment['line']} with side RIGHT for comment on {comment['path']}")
+            logger.debug(f"Using line {formatted_comment['line']} with side RIGHT for comment on {comment['path']}")
         
         formatted_comments.append(formatted_comment)
     
@@ -418,7 +427,7 @@ def post_line_comments(
             "comments": [
                 {
                     "path": c["path"],
-                    "position" if "position" in c else "line": c.get("position", c.get("line")),
+                    "line" if "line" in c else "position": c.get("line", c.get("position")),
                     "body_length": len(c["body"])
                 }
                 for c in data["comments"]
@@ -461,12 +470,18 @@ def post_line_comments(
                                     "path": comment["path"],
                                 }
                                 
-                                # Add position or line/side parameters
-                                if "position" in comment:
-                                    direct_data["position"] = comment["position"]
-                                else:
+                                # Add line and side parameters for direct comments
+                                if "line" in comment:
                                     direct_data["line"] = comment["line"]
-                                    direct_data["side"] = "RIGHT"
+                                    direct_data["side"] = comment.get("side", "RIGHT")
+                                    
+                                    # Add start_line and start_side for multi-line comments
+                                    if "start_line" in comment:
+                                        direct_data["start_line"] = comment["start_line"]
+                                        direct_data["start_side"] = comment.get("start_side", "RIGHT")
+                                # Only use position as a fallback
+                                elif "position" in comment:
+                                    direct_data["position"] = comment["position"]
                                 
                                 direct_response = requests.post(direct_comment_url, headers=headers, json=direct_data)
                                 if direct_response.status_code >= 400:
@@ -545,7 +560,7 @@ def parse_diff_for_lines(diff_text: str) -> Dict[str, List[Tuple[int, int, str]]
         # Track actual diff lines
         position += 1
         
-        # Skip removal lines
+        # Skip removal lines but still count position
         if line.startswith('-'):
             continue
             
@@ -553,11 +568,19 @@ def parse_diff_for_lines(diff_text: str) -> Dict[str, List[Tuple[int, int, str]]
         if line.startswith('+'):
             line_number += 1
             if current_file:
+                # Store both the line number and position for API flexibility
                 result[current_file].append((line_number, position, line[1:]))
         elif not line.startswith('\\'):  # Skip "No newline" markers
             line_number += 1
             if current_file:
+                # Store both the line number and position for API flexibility
                 result[current_file].append((line_number, position, line))
+    
+    # Log the mapping for debugging
+    for file_path, lines in result.items():
+        logger.debug(f"Mapped {len(lines)} lines for file {file_path}")
+        if lines and len(lines) > 0:
+            logger.debug(f"First few mappings: {lines[:min(3, len(lines))]}")
     
     return result
 
