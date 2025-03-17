@@ -78,8 +78,22 @@ def run_tests(test_data: Dict[str, Any]) -> Tuple[int, int]:
         code = test_case.get("code", "")
         expected_issues = test_case.get("expected_issues", [])
         
-        # Create a temporary file for testing
-        temp_file = f"temp_test_{name}.{language}"
+        # Create a temporary file for testing with proper extension
+        file_extension = ""
+        if language == "python":
+            file_extension = ".py"
+        elif language == "javascript":
+            file_extension = ".js"
+        elif language == "typescript":
+            file_extension = ".ts"
+        elif language == "csharp":
+            file_extension = ".cs"
+        elif language == "java":
+            file_extension = ".java"
+        else:
+            file_extension = f".{language}"
+            
+        temp_file = f"temp_test_{name}{file_extension}"
         
         try:
             # Write code to temporary file
