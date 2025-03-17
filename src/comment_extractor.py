@@ -255,132 +255,191 @@ class CommentExtractor:
             # Log the available files in the diff for debugging
             self.logger.debug(f"Available files in diff: {list(file_line_map.keys())}")
             
-            # Try multiple patterns to find file-specific comments
-            patterns = [
-                # Standard pattern with ### header
-                r'### ([^:\n]+):(\d+)\s*\n(.*?)(?=\n### [^:\n]+:\d+|\Z)',
-                # Alternative pattern with "In file X, line Y:" format
-                r'(?:^|\n)(?:In|At) ([^,\n]+),\s*line (\d+):(.*?)(?=\n(?:In|At) [^,\n]+,\s*line \d+:|\Z)',
-                # Another alternative with "filename.ext line Y:" format
-                r'(?:^|\n)([^:\s\n]+)\s+line\s+(\d+):(.*?)(?=\n[^:\s\n]+\s+line\s+\d+:|\Z)'
-            ]
+            # Primary pattern for file-specific comments with code suggestions
+            primary_pattern = r'### ([^:\n]+):(\d+)\s*\n(.*?)(?=\n### [^:\n]+:\d+|\Z)'
             
-            # Try each pattern
-            for pattern_idx, pattern in enumerate(patterns):
-                self.logger.debug(f"Trying pattern {pattern_idx+1}: {pattern}")
-                for match in re.finditer(pattern, review_text, re.DOTALL):
-                    file_path = match.group(1).strip()
-                    line_num = int(match.group(2))
-                    section_content = match.group(3).strip()
-                    
-                    self.logger.debug(f"Found file section with pattern {pattern_idx+1}: {file_path}:{line_num}")
-                    
-                    # Check if the file and line exist in the diff
-                    if not self.validate_file_path(file_path, file_line_map):
-                        self.logger.warning(f"File {file_path} not found in diff, checking for similar files")
-                        # Try to find a similar file name
-                        similar_files = [f for f in file_line_map.keys() if f.endswith(file_path) or file_path.endswith(f)]
-                        if similar_files:
-                            file_path = similar_files[0]
-                            self.logger.info(f"Using similar file {file_path} instead")
-                        else:
-                            self.logger.warning(f"No similar file found for {file_path}, skipping comment")
-                            continue
-                    
-                    # Find the corresponding position in the diff
-                    position = None
-                    for line, pos, _ in file_line_map[file_path]:
-                        if line == line_num:
-                            position = pos
-                            break
-                    
-                    if position is not None:
-                        comments.append({
-                            "path": file_path,
-                            "line": line_num,
-                            "position": position,
-                            "body": section_content
-                        })
-                        self.logger.debug(f"Added comment for {file_path}:{line_num} at position {position}")
-                    else:
-                        self.logger.warning(f"Could not find position for {file_path}:{line_num}, trying closest line")
-                        # Try to find the closest line number
-                        if file_line_map[file_path]:
-                            closest_line = min(file_line_map[file_path], key=lambda x: abs(x[0] - line_num))
-                            closest_line_num, closest_pos, _ = closest_line
-                            self.logger.info(f"Using closest line {closest_line_num} at position {closest_pos}")
-                            comments.append({
-                                "path": file_path,
-                                "line": closest_line_num,
-                                "position": closest_pos,
-                                "body": f"[Originally for line {line_num}] {section_content}"
-                            })
+            # Try to find all file-specific comments with the primary pattern
+            primary_matches = list(re.finditer(primary_pattern, review_text, re.DOTALL))
+            self.logger.debug(f"Found {len(primary_matches)} primary file-specific comments")
             
-            # Process standard line comments
-            for match in matches:
-                file_path = match["file"]
-                line_num = match["line"]
+            # Process primary matches first (these are the most reliable)
+            for match in primary_matches:
+                file_path = match.group(1).strip()
+                line_num = int(match.group(2))
+                content = match.group(3).strip()
                 
-                # Get the comment text
-                comment_text = self.extract_comment_text(review_text, match)
-                if not comment_text:
-                    continue
+                self.logger.debug(f"Processing primary file-specific comment: {file_path}:{line_num}")
+                
+                # Check if the file exists in the diff
+                if not self.validate_file_path(file_path, file_line_map):
+                    self.logger.warning(f"File {file_path} not found in diff, checking for similar files")
+                    # Try to find a similar file name
+                    similar_files = [f for f in file_line_map.keys() if f.endswith(file_path) or file_path.endswith(f)]
+                    if similar_files:
+                        file_path = similar_files[0]
+                        self.logger.info(f"Using similar file {file_path} instead")
+                    else:
+                        self.logger.warning(f"No similar file found for {file_path}, skipping comment")
+                        continue
                 
                 # Find the corresponding position in the diff
                 position = None
-                if file_path in file_line_map:
-                    for line, pos, _ in file_line_map[file_path]:
-                        if line == line_num:
-                            position = pos
-                            break
+                for line, pos, _ in file_line_map[file_path]:
+                    if line == line_num:
+                        position = pos
+                        break
                 
-                if position is None:
-                    self.logger.warning(
-                        f"Could not find position for line {line_num} in {file_path}",
-                        context={"file": file_path, "line": line_num}
-                    )
-                    continue
-                
-                comments.append({
-                    "path": file_path,
-                    "line": line_num,
-                    "position": position,
-                    "body": comment_text
-                })
+                if position is not None:
+                    # Check if the content contains a suggestion block
+                    suggestion_pattern = r'```suggestion\n(.*?)```'
+                    has_suggestion = re.search(suggestion_pattern, content, re.DOTALL)
+                    
+                    # If there's no suggestion block but there is a code block, convert it to a suggestion
+                    if not has_suggestion:
+                        code_block_pattern = r'```(?:\w+)?\n(.*?)```'
+                        code_block_match = re.search(code_block_pattern, content, re.DOTALL)
+                        if code_block_match:
+                            code_block = code_block_match.group(1).strip()
+                            # Replace the code block with a suggestion block
+                            content = content.replace(
+                                code_block_match.group(0),
+                                f"```suggestion\n{code_block}\n```"
+                            )
+                            self.logger.info(f"Converted code block to suggestion for {file_path}:{line_num}")
+                    
+                    comments.append({
+                        "path": file_path,
+                        "line": line_num,
+                        "position": position,
+                        "body": content
+                    })
+                    self.logger.debug(f"Added comment for {file_path}:{line_num} at position {position}")
+                else:
+                    self.logger.warning(f"Could not find position for {file_path}:{line_num}, trying closest line")
+                    # Try to find the closest line number
+                    if file_line_map[file_path]:
+                        closest_line = min(file_line_map[file_path], key=lambda x: abs(x[0] - line_num))
+                        closest_line_num, closest_pos, _ = closest_line
+                        self.logger.info(f"Using closest line {closest_line_num} at position {closest_pos}")
+                        comments.append({
+                            "path": file_path,
+                            "line": closest_line_num,
+                            "position": closest_pos,
+                            "body": f"[Originally for line {line_num}] {content}"
+                        })
             
-            # If we still have no comments, try to extract any code blocks with file references
-            if not comments:
-                self.logger.warning("No comments found with standard patterns, trying to extract code blocks")
-                code_block_pattern = r'```(?:suggestion)?\n(.*?)```'
-                code_blocks = re.finditer(code_block_pattern, review_text, re.DOTALL)
+            # Try alternative patterns if we didn't find enough primary matches
+            if len(primary_matches) < 3:
+                # Alternative patterns to try
+                alternative_patterns = [
+                    # "In file X, line Y:" format
+                    r'(?:^|\n)(?:In|At) ([^,\n]+),\s*line (\d+):(.*?)(?=\n(?:In|At) [^,\n]+,\s*line \d+:|\Z)',
+                    # "filename.ext line Y:" format
+                    r'(?:^|\n)([^:\s\n]+)\s+line\s+(\d+):(.*?)(?=\n[^:\s\n]+\s+line\s+\d+:|\Z)',
+                    # "File: filename.ext, Line: Y" format
+                    r'(?:^|\n)File:\s*([^,\n]+),\s*Line:\s*(\d+)(.*?)(?=\n(?:File:|In|At)|\Z)'
+                ]
                 
-                for i, block_match in enumerate(code_blocks):
-                    code_block = block_match.group(1).strip()
-                    # Look for file references before the code block
-                    context_before = review_text[:block_match.start()].split('\n')[-3:]  # Get 3 lines before
-                    context_text = '\n'.join(context_before)
+                for pattern_idx, pattern in enumerate(alternative_patterns):
+                    alt_matches = list(re.finditer(pattern, review_text, re.DOTALL))
+                    self.logger.debug(f"Found {len(alt_matches)} matches with alternative pattern {pattern_idx+1}")
                     
-                    # Try to find file references in the context
-                    file_ref_pattern = r'([^/\s]+\.[a-zA-Z0-9]+)'
-                    file_refs = re.findall(file_ref_pattern, context_text)
-                    
-                    if file_refs:
-                        file_path = file_refs[0]
-                        # Try to find a matching file in the diff
-                        matching_files = [f for f in file_line_map.keys() if f.endswith(file_path)]
+                    for match in alt_matches:
+                        file_path = match.group(1).strip()
+                        line_num = int(match.group(2))
+                        content = match.group(3).strip()
                         
-                        if matching_files:
-                            file_path = matching_files[0]
-                            # Use the first line in the file as a fallback
-                            if file_line_map[file_path]:
-                                line_num, pos, _ = file_line_map[file_path][0]
-                                comments.append({
-                                    "path": file_path,
-                                    "line": line_num,
-                                    "position": pos,
-                                    "body": f"Code suggestion:\n\n```suggestion\n{code_block}\n```"
-                                })
-                                self.logger.info(f"Added fallback comment for {file_path}:{line_num}")
+                        # Skip if we already have a comment for this file and line
+                        if any(c["path"] == file_path and c["line"] == line_num for c in comments):
+                            continue
+                        
+                        self.logger.debug(f"Processing alternative match: {file_path}:{line_num}")
+                        
+                        # Check if the file exists in the diff
+                        if not self.validate_file_path(file_path, file_line_map):
+                            continue
+                        
+                        # Find the corresponding position in the diff
+                        position = None
+                        for line, pos, _ in file_line_map[file_path]:
+                            if line == line_num:
+                                position = pos
+                                break
+                        
+                        if position is not None:
+                            # Check if the content contains a code block and convert to suggestion if needed
+                            code_block_pattern = r'```(?:\w+)?\n(.*?)```'
+                            code_block_match = re.search(code_block_pattern, content, re.DOTALL)
+                            if code_block_match:
+                                code_block = code_block_match.group(1).strip()
+                                # Check if it's already a suggestion block
+                                if not code_block_match.group(0).startswith("```suggestion"):
+                                    # Replace the code block with a suggestion block
+                                    content = content.replace(
+                                        code_block_match.group(0),
+                                        f"```suggestion\n{code_block}\n```"
+                                    )
+                                    self.logger.info(f"Converted code block to suggestion for {file_path}:{line_num}")
+                            
+                            comments.append({
+                                "path": file_path,
+                                "line": line_num,
+                                "position": position,
+                                "body": content
+                            })
+                            self.logger.debug(f"Added comment for {file_path}:{line_num} at position {position}")
+            
+            # Look for recommendations section and extract any code suggestions there
+            recommendations_pattern = r'## Recommendations\s*\n(.*?)(?=\n##|\Z)'
+            recommendations_match = re.search(recommendations_pattern, review_text, re.DOTALL)
+            
+            if recommendations_match:
+                recommendations_text = recommendations_match.group(1).strip()
+                self.logger.debug("Found Recommendations section, checking for code suggestions")
+                
+                # Look for file-specific comments in the recommendations section
+                rec_file_matches = list(re.finditer(primary_pattern, recommendations_text, re.DOTALL))
+                self.logger.debug(f"Found {len(rec_file_matches)} file-specific comments in recommendations")
+                
+                for match in rec_file_matches:
+                    file_path = match.group(1).strip()
+                    line_num = int(match.group(2))
+                    content = match.group(3).strip()
+                    
+                    # Skip if we already have a comment for this file and line
+                    if any(c["path"] == file_path and c["line"] == line_num for c in comments):
+                        continue
+                    
+                    # Process the same way as primary matches
+                    if self.validate_file_path(file_path, file_line_map):
+                        position = None
+                        for line, pos, _ in file_line_map[file_path]:
+                            if line == line_num:
+                                position = pos
+                                break
+                        
+                        if position is not None:
+                            # Check for suggestion blocks
+                            suggestion_pattern = r'```suggestion\n(.*?)```'
+                            has_suggestion = re.search(suggestion_pattern, content, re.DOTALL)
+                            
+                            if not has_suggestion:
+                                code_block_pattern = r'```(?:\w+)?\n(.*?)```'
+                                code_block_match = re.search(code_block_pattern, content, re.DOTALL)
+                                if code_block_match:
+                                    code_block = code_block_match.group(1).strip()
+                                    content = content.replace(
+                                        code_block_match.group(0),
+                                        f"```suggestion\n{code_block}\n```"
+                                    )
+                            
+                            comments.append({
+                                "path": file_path,
+                                "line": line_num,
+                                "position": position,
+                                "body": content
+                            })
+                            self.logger.debug(f"Added recommendation comment for {file_path}:{line_num}")
             
             self.logger.info(f"Extracted {len(comments)} line comments total")
             return comments

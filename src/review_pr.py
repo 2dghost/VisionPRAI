@@ -256,7 +256,10 @@ def generate_prompt(diff: str, files: List[Dict[str, Any]], config: Dict[str, An
         "7. IMPORTANT: Each file-specific comment MUST start with '### filename.ext:line_number' format\n"
         "8. DO NOT use any other format for file-specific comments\n"
         "9. ALWAYS include file-specific comments in the 'File-Specific Comments' section\n"
-        "10. NEVER skip providing file-specific comments - they are the most important part of the review\n\n"
+        "10. NEVER skip providing file-specific comments - they are the most important part of the review\n"
+        "11. NEVER provide general recommendations without specific code changes\n"
+        "12. ALL recommendations MUST be in the form of specific code changes with file and line references\n"
+        "13. DO NOT suggest 'Consider refactoring...' or similar vague recommendations - always provide exact code changes\n\n"
     )
     
     # Add cursor rules guidance if available
@@ -304,12 +307,18 @@ def generate_prompt(diff: str, files: List[Dict[str, Any]], config: Dict[str, An
         "Include all line-specific comments here, using the exact format specified above (### filename.ext:line_number).\n"
         "This section MUST contain at least one file-specific comment for each file with issues.\n"
         "IMPORTANT: This section is required and will be used to post comments on specific lines of code.\n"
+        "DO NOT provide general recommendations - ONLY specific code changes with file and line references.\n"
     )
     
     if include_recommendations:
         sections.append(
             "## Recommendations\n"
-            "Summarize your key recommendations for improving the PR.\n"
+            "IMPORTANT: Do NOT provide general text recommendations here. Instead, for each recommendation:\n"
+            "1. Identify the specific file and line number\n"
+            "2. Format as '### filename.ext:line_number'\n"
+            "3. Explain the issue\n"
+            "4. Provide a code suggestion block with the exact code change\n"
+            "5. Explain why your solution is better\n"
         )
     
     # Add numbered sections to the prompt
@@ -323,6 +332,8 @@ def generate_prompt(diff: str, files: List[Dict[str, Any]], config: Dict[str, An
         "- Each suggestion must be complete and valid code\n"
         "- If you find ANY issues, you MUST provide at least one code suggestion\n"
         "- Use the EXACT section headers shown above (## Summary, ## Overview of Changes, etc.)\n"
+        "- NEVER provide general recommendations without specific code changes\n"
+        "- ALL recommendations MUST be in the form of specific code changes with file and line references\n"
     )
     
     return prompt
