@@ -104,17 +104,50 @@ class ModelAdapter:
             "anthropic-version": "2023-06-01"
         }
         
-        # Updated payload format for Anthropic Claude API
-        payload = {
-            "model": self.model,
-            "max_tokens": self.max_tokens,
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.5  # Lower temperature for more consistent formatting
-        }
-        
-        response = requests.post(self.endpoint, json=payload, headers=headers)
-        if response.status_code != 200:
-            raise RuntimeError(f"Anthropic API error: {response.status_code} - {response.text}")
+        # Try with the newer Anthropic API format
+        try:
+            # First try with the latest API version
+            headers["anthropic-version"] = "2023-01-01"
+            
+            # Updated payload format for Anthropic Claude API
+            payload = {
+                "model": self.model,
+                "max_tokens": self.max_tokens,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.5  # Lower temperature for more consistent formatting
+            }
+            
+            response = requests.post(self.endpoint, json=payload, headers=headers)
+            
+            # If we get a 404 error, try with the latest model
+            if response.status_code == 404:
+                logger = logging.getLogger("ai-pr-reviewer")
+                logger.warning(f"Model {self.model} not found, trying with claude-3-opus-latest")
+                payload["model"] = "claude-3-opus-latest"
+                response = requests.post(self.endpoint, json=payload, headers=headers)
+            
+            if response.status_code != 200:
+                # Try with updated headers for newer API
+                headers = {
+                    "anthropic-api-key": self.api_key,
+                    "Content-Type": "application/json",
+                    "anthropic-version": "2023-06-01"
+                }
+                response = requests.post(self.endpoint, json=payload, headers=headers)
+                
+                if response.status_code != 200:
+                    # Try with x-api-key but in Authorization header
+                    headers = {
+                        "Authorization": f"Bearer {self.api_key}",
+                        "Content-Type": "application/json",
+                        "anthropic-version": "2023-06-01"
+                    }
+                    response = requests.post(self.endpoint, json=payload, headers=headers)
+                    
+                    if response.status_code != 200:
+                        raise RuntimeError(f"Anthropic API error: {response.status_code} - {response.text}")
+        except Exception as e:
+            raise RuntimeError(f"Anthropic API error: {str(e)}")
         
         # Handle Claude 3 response format
         response_json = response.json()
