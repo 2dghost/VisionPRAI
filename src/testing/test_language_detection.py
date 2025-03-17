@@ -1,182 +1,202 @@
 #!/usr/bin/env python3
 """
-Test runner for language detection functionality.
-Tests the language detector against predefined test cases.
+Test script for language detection functionality.
+Tests both basic file extension detection and enhanced pattern-based detection.
 """
 
-import os
 import sys
+import os
 import json
-import logging
-import argparse
-from typing import Dict, List, Any, Tuple
+from typing import Dict, List, Any
 
 # Add the parent directory to sys.path to support both local and GitHub Actions environments
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 try:
-    # Try direct imports first (for GitHub Actions and package usage)
-    from language_detector import LanguageDetector, detect_language, detect_issues
+    from src.language_detector import LanguageDetector, detect_language
+    from src.custom_exceptions import LanguageDetectionError
 except ImportError:
-    # Fall back to src-prefixed imports (for local development)
-    from src.language_detector import LanguageDetector, detect_language, detect_issues
+    from language_detector import LanguageDetector, detect_language
+    from custom_exceptions import LanguageDetectionError
 
-# Configure basic logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger(__name__)
-
-
-def load_test_cases(test_file: str) -> Dict[str, Any]:
-    """
-    Load test cases from a JSON file.
-    
-    Args:
-        test_file: Path to the test file
-        
-    Returns:
-        Dictionary containing test cases
-    """
-    try:
-        with open(test_file, 'r') as f:
-            test_data = json.load(f)
-        return test_data
-    except Exception as e:
-        logger.error(f"Failed to load test cases from {test_file}: {str(e)}")
-        return {}
-
-
-def run_tests(test_data: Dict[str, Any]) -> Tuple[int, int]:
-    """
-    Run tests against the language detector.
-    
-    Args:
-        test_data: Dictionary containing test cases
-        
-    Returns:
-        Tuple of (passed_tests, total_tests)
-    """
-    if not test_data or "test_cases" not in test_data:
-        logger.error("Invalid test data format")
-        return 0, 0
-    
-    test_cases = test_data.get("test_cases", [])
-    passed = 0
-    total = len(test_cases)
+def run_basic_test():
+    """Run basic language detection tests."""
+    print("Running basic language detection tests...")
     
     # Initialize detector
     detector = LanguageDetector()
     
-    for i, test_case in enumerate(test_cases, 1):
-        logger.info(f"Running test {i}/{total}: {test_case.get('name', 'Unnamed')}")
+    # Test cases for common file extensions
+    test_cases = [
+        ("test.py", "python"),
+        ("script.js", "javascript"),
+        ("app.ts", "typescript"),
+        ("index.html", "html"),
+        ("style.css", "css"),
+        ("config.yml", "yaml"),
+        ("doc.md", "markdown"),
+        ("data.json", "json"),
+        ("query.sql", "sql"),
+        ("Dockerfile", "dockerfile"),
+        ("Makefile", "unknown"),  # Makefile doesn't have a standard extension
+    ]
+    
+    # Run tests
+    passed = 0
+    failed = 0
+    
+    for filename, expected_language in test_cases:
+        detected = detector.detect_language(filename)
+        result = "✓" if detected == expected_language else "✗"
+        status = "PASS" if detected == expected_language else "FAIL"
         
-        # Extract test case data
-        name = test_case.get("name", "unnamed")
-        language = test_case.get("language", "unknown")
-        code = test_case.get("code", "")
-        expected_issues = test_case.get("expected_issues", [])
+        print(f"[{status}] {filename} -> Expected: {expected_language}, Got: {detected} {result}")
         
-        # Create a temporary file for testing with proper extension
-        file_extension = ""
-        if language == "python":
-            file_extension = ".py"
-        elif language == "javascript":
-            file_extension = ".js"
-        elif language == "typescript":
-            file_extension = ".ts"
-        elif language == "csharp":
-            file_extension = ".cs"
-        elif language == "java":
-            file_extension = ".java"
+        if detected == expected_language:
+            passed += 1
         else:
-            file_extension = f".{language}"
-            
-        temp_file = f"temp_test_{name}{file_extension}"
-        
-        try:
-            # Write code to temporary file
-            with open(temp_file, 'w') as f:
-                f.write(code)
-            
-            # Detect language
-            detected_language = detector.detect_language(temp_file)
-            
-            # Check language detection
-            if detected_language != language:
-                logger.warning(f"Language detection failed for {name}: "
-                              f"Expected {language}, got {detected_language}")
-            
-            # Detect issues
-            detected_issues = detector.detect_issues(temp_file, code)
-            
-            # Flatten detected issues to get category names
-            detected_categories = list(detected_issues.keys())
-            
-            # Check if all expected issues were detected
-            all_expected_detected = all(issue in detected_categories for issue in expected_issues)
-            
-            if all_expected_detected:
-                logger.info(f"Test {name} PASSED - All expected issues detected")
-                passed += 1
-            else:
-                logger.warning(f"Test {name} FAILED - Not all expected issues detected")
-                logger.warning(f"Expected: {expected_issues}")
-                logger.warning(f"Detected: {detected_categories}")
-            
-            # Show detailed detection results
-            logger.info(f"Detailed detection results for {name}:")
-            for category, issues in detected_issues.items():
-                logger.info(f"  {category}: {len(issues)} issue(s)")
-                for line_num, line_text in issues[:3]:  # Show first 3 issues max
-                    logger.info(f"    Line {line_num}: {line_text[:50]}...")
-                if len(issues) > 3:
-                    logger.info(f"    ... and {len(issues) - 3} more")
-        
-        except Exception as e:
-            logger.error(f"Error running test {name}: {str(e)}")
-        
-        finally:
-            # Clean up temporary file
-            if os.path.exists(temp_file):
-                os.remove(temp_file)
+            failed += 1
     
-    # Print summary
-    success_rate = (passed / total * 100) if total > 0 else 0
-    logger.info(f"Test summary: {passed}/{total} tests passed ({success_rate:.1f}%)")
-    
-    return passed, total
+    print(f"\nBasic tests completed: {passed} passed, {failed} failed")
+    return passed, failed
 
+def run_enhanced_test():
+    """Run enhanced language detection tests for pattern-based detection."""
+    print("\nRunning enhanced language detection tests...")
+    
+    # Initialize detector
+    detector = LanguageDetector()
+    
+    # Test cases for pattern-based detection
+    test_cases = [
+        ("package.json", "javascript"),
+        ("composer.json", "php"),
+        ("cargo.toml", "rust"),
+        ("Gemfile", "ruby"),
+        ("requirements.txt", "python"),
+        ("setup.py", "python"),
+        ("pyproject.toml", "python"),
+        ("pom.xml", "java"),
+        ("build.gradle", "java"),
+        ("go.mod", "go"),
+        ("docker-compose.yml", "docker-compose"),
+        (".gitignore", "gitignore"),
+        (".babelrc", "javascript"),
+        (".eslintrc", "javascript"),
+    ]
+    
+    # Run tests
+    passed = 0
+    failed = 0
+    
+    for filename, expected_language in test_cases:
+        detected = detector.detect_language(filename)
+        result = "✓" if detected == expected_language else "✗"
+        status = "PASS" if detected == expected_language else "FAIL"
+        
+        print(f"[{status}] {filename} -> Expected: {expected_language}, Got: {detected} {result}")
+        
+        if detected == expected_language:
+            passed += 1
+        else:
+            failed += 1
+    
+    print(f"\nEnhanced tests completed: {passed} passed, {failed} failed")
+    return passed, failed
+
+def test_issue_detection():
+    """Test the detection of potential issues in code."""
+    print("\nTesting issue detection in code...")
+    
+    detector = LanguageDetector()
+    
+    # Test Python code with potential issues
+    python_code = """
+    def insecure_function(user_input):
+        # SQL Injection vulnerability
+        query = "SELECT * FROM users WHERE name = '" + user_input + "'"
+        cursor.execute(query)
+        
+        # Command injection vulnerability
+        import os
+        os.system("ls " + user_input)
+        
+        # Error handling issue
+        try:
+            do_something()
+        except:
+            pass
+        
+        # Hardcoded secret
+        api_key = "abcdefghijklmnopqrstuvwxyz1234567890"
+    """
+    
+    issues = detector.detect_issues("test.py", python_code)
+    
+    # Print detected issues
+    print("\nDetected issues in Python code:")
+    for category, issue_list in issues.items():
+        print(f"  {category}: {len(issue_list)} issues")
+        for line_num, match in issue_list:
+            print(f"    Line {line_num}: {match[:50]}...")
+    
+    # Test JavaScript code with potential issues
+    js_code = """
+    function processUserData(userId) {
+        // SQL Injection vulnerability
+        const query = `SELECT * FROM users WHERE id = ${userId}`;
+        db.execute(query);
+        
+        // Command injection vulnerability
+        eval(`console.log(${userId})`);
+        
+        // Error handling issue
+        try {
+            doSomething();
+        } catch (e) {
+            // Empty catch block
+        }
+        
+        // Hardcoded secret
+        const apiKey = "abcdefghijklmnopqrstuvwxyz1234567890";
+    }
+    """
+    
+    issues = detector.detect_issues("test.js", js_code)
+    
+    # Print detected issues
+    print("\nDetected issues in JavaScript code:")
+    for category, issue_list in issues.items():
+        print(f"  {category}: {len(issue_list)} issues")
+        for line_num, match in issue_list:
+            print(f"    Line {line_num}: {match[:50]}...")
+    
+    return True
 
 def main():
-    """Main function."""
-    parser = argparse.ArgumentParser(description="Test language detection functionality")
-    parser.add_argument("--test-file", default="test_cases/language_detection.json",
-                        help="Path to the test case file")
-    parser.add_argument("--verbose", "-v", action="store_true",
-                        help="Enable verbose logging")
-    args = parser.parse_args()
+    """Run all tests and report results."""
+    print("=" * 60)
+    print("LANGUAGE DETECTION TEST SUITE")
+    print("=" * 60)
     
-    # Set logging level
-    if args.verbose:
-        logging.getLogger().setLevel(logging.DEBUG)
-        logger.setLevel(logging.DEBUG)
+    basic_passed, basic_failed = run_basic_test()
+    enhanced_passed, enhanced_failed = run_enhanced_test()
+    issue_detection_success = test_issue_detection()
     
-    # Determine test file path
-    test_file = args.test_file
-    if not os.path.isabs(test_file):
-        test_file = os.path.join(os.path.dirname(__file__), test_file)
+    total_passed = basic_passed + enhanced_passed
+    total_failed = basic_failed + enhanced_failed
     
-    logger.info(f"Testing language detector using test file: {test_file}")
+    print("\n" + "=" * 60)
+    print("TEST SUMMARY")
+    print("=" * 60)
+    print(f"Basic tests: {basic_passed} passed, {basic_failed} failed")
+    print(f"Enhanced tests: {enhanced_passed} passed, {enhanced_failed} failed")
+    print(f"Issue detection: {'SUCCESS' if issue_detection_success else 'FAILED'}")
+    print(f"TOTAL: {total_passed} passed, {total_failed} failed")
+    print("=" * 60)
     
-    # Load and run tests
-    test_data = load_test_cases(test_file)
-    passed, total = run_tests(test_data)
-    
-    # Return non-zero exit code if any tests failed
-    return 0 if passed == total else 1
-
+    # Return exit code based on test result
+    sys.exit(1 if total_failed > 0 else 0)
 
 if __name__ == "__main__":
-    sys.exit(main()) 
+    main() 

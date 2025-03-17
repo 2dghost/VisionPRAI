@@ -283,6 +283,73 @@ def generate_prompt(diff: str, files: List[Dict[str, Any]], config: Dict[str, An
         "You are an expert code reviewer following best practices. "
         "Analyze this PR diff and provide detailed, constructive feedback with concrete code improvements.\n"
         f"{focus_areas}\n\n"
+    )
+    
+    # Add language-specific guidance if language detection is enabled
+    if language_detection_enabled and file_info:
+        # Collect detected languages
+        languages = set()
+        for file in file_info:
+            if "language" in file and file["language"] != "unknown":
+                languages.add(file["language"])
+                
+        # Add language-specific guidance section to the prompt
+        if languages:
+            prompt += "## Language-Specific Guidance\n\n"
+            
+            for language in sorted(languages):
+                if language == "python":
+                    prompt += "### Python Best Practices\n"
+                    prompt += "- Use type hints for better maintainability and IDE support\n"
+                    prompt += "- Prefer context managers (with statements) for resource management\n"
+                    prompt += "- Use f-strings instead of older string formatting methods\n"
+                    prompt += "- Follow PEP 8 style guidelines\n"
+                    prompt += "- Use specific exception types rather than generic Exception or bare except\n"
+                    prompt += "- Validate user inputs before using in SQL queries to prevent injection\n\n"
+                elif language == "javascript" or language == "typescript":
+                    prompt += f"### {language.capitalize()} Best Practices\n"
+                    prompt += "- Prefer const and let over var\n"
+                    prompt += "- Use === instead of == for comparisons\n"
+                    prompt += "- Validate user inputs before adding to DOM or using in queries\n"
+                    prompt += "- Avoid direct DOM manipulation when using frameworks\n"
+                    prompt += "- Use async/await instead of raw Promises when possible\n"
+                    if language == "typescript":
+                        prompt += "- Avoid using 'any' type except when absolutely necessary\n"
+                        prompt += "- Prefer interfaces for object shapes over type aliases\n"
+                        prompt += "- Use non-null assertion operator (!.) sparingly\n"
+                    prompt += "\n"
+                elif language == "java":
+                    prompt += "### Java Best Practices\n"
+                    prompt += "- Use try-with-resources for AutoCloseable resources\n"
+                    prompt += "- Prefer prepared statements for SQL queries\n"
+                    prompt += "- Follow standard naming conventions (camelCase for methods/variables)\n"
+                    prompt += "- Properly handle exceptions with specific catch blocks\n"
+                    prompt += "- Use StringBuilder for string concatenation in loops\n\n"
+                elif language == "csharp":
+                    prompt += "### C# Best Practices\n"
+                    prompt += "- Use 'using' statements for IDisposable resources\n"
+                    prompt += "- Prefer async/await over Task.Continue patterns\n"
+                    prompt += "- Use parameterized queries for database operations\n"
+                    prompt += "- Prefer properties over public fields\n"
+                    prompt += "- Follow standard naming conventions (PascalCase for public members)\n\n"
+                elif language == "php":
+                    prompt += "### PHP Best Practices\n"
+                    prompt += "- Use prepared statements for SQL queries\n"
+                    prompt += "- Always validate and sanitize user input\n"
+                    prompt += "- Follow PSR standards for code formatting\n"
+                    prompt += "- Use type declarations (PHP 7+)\n"
+                    prompt += "- Avoid using the @ error suppression operator\n\n"
+                elif language == "go":
+                    prompt += "### Go Best Practices\n"
+                    prompt += "- Handle errors explicitly, don't use _ to ignore them\n"
+                    prompt += "- Use context for cancellation and timeouts\n"
+                    prompt += "- Follow Go's standard formatting (gofmt)\n"
+                    prompt += "- Prefer composition over inheritance\n"
+                    prompt += "- Use meaningful variable names (not single letters)\n\n"
+            
+            prompt += "\n"
+    
+    prompt += (
         "CRITICAL: For each issue, you MUST format your line-specific comments exactly like this:\n\n"
         "### filename.ext:line_number\n"
         "Problem: <clear explanation of the issue>\n\n"
@@ -300,6 +367,9 @@ def generate_prompt(diff: str, files: List[Dict[str, Any]], config: Dict[str, An
         "   - How it follows best practices or patterns used elsewhere in the codebase\n"
         "   - Performance, security, or maintainability benefits\n"
         "   - Any relevant documentation or standards that support your suggestion\n"
+        "   - Educational explanations of the concepts involved for less experienced developers\n"
+        "   - Links to relevant documentation or resources when appropriate\n"
+        "   - Alternative approaches that could also solve the issue and their trade-offs\n"
         "5. Make suggestions ONLY for lines that exist in the diff\n"
         "6. If you find ANY issues, you MUST provide at least one code suggestion\n"
         "7. IMPORTANT: Each file-specific comment MUST start with '### filename.ext:line_number' format\n"
@@ -318,90 +388,18 @@ def generate_prompt(diff: str, files: List[Dict[str, Any]], config: Dict[str, An
         "    - Secrets Management: Identify hardcoded credentials or secrets\n"
         "15. Thoroughly identify error handling problems:\n"
         "    - Missing Exception Handling: Identify operations without proper try/except blocks\n"
-        "    - Overly Broad Exception Clauses: Flag code that catches Exception without specific handling\n"
-        "    - Swallowed Exceptions: Detect empty except blocks or those that hide important errors\n"
-        "    - Improper Resource Cleanup: Find missing context managers for files, connections, etc.\n"
-        "    - Unhandled API Errors: Identify external API calls without error handling\n\n"
+        "    - Too Broad Exception Handling: Flag catching Exception or bare except\n"
+        "    - Swallowed Exceptions: Detect empty except blocks or pass statements\n"
+        "    - Proper Logging: Ensure exceptions include context in error messages\n"
+        "16. Make your explanations educational and contextual:\n"
+        "    - Explain WHY a particular pattern is problematic, not just that it is\n"
+        "    - Provide specific examples of bugs or vulnerabilities that could result\n"
+        "    - Reference industry best practices or standard guidelines when applicable\n"
+        "    - Include technical details that help developers learn proper techniques\n"
+        "    - Explain security implications in detail for any security-related issues\n"
+        "17. For complex changes, provide a step-by-step explanation of your reasoning\n"
+        "18. When identifying a pattern issue, explain the broader design principle involved\n"
     )
-    
-    # Add language-specific guidance if language detection is enabled
-    if language_detection_enabled:
-        # Collect all detected languages
-        detected_languages = set()
-        potential_issues_detected = False
-        
-        for file_entry in file_info:
-            if "language" in file_entry and file_entry["language"] != "unknown":
-                detected_languages.add(file_entry["language"])
-            if file_entry.get("potential_issues"):
-                potential_issues_detected = True
-        
-        if detected_languages:
-            prompt += "Language-specific guidance:\n\n"
-            
-            if "python" in detected_languages:
-                prompt += (
-                    "Python Best Practices:\n"
-                    "- Use context managers (with statements) for resource management\n"
-                    "- Follow PEP 8 style guidelines\n"
-                    "- Use type hints for better code clarity\n"
-                    "- Use f-strings instead of % or .format() for string formatting\n"
-                    "- Catch specific exceptions instead of broad exception clauses\n"
-                    "- Use list/dict comprehensions for concise transformations\n"
-                    "- Use parameterized queries for database operations\n\n"
-                )
-            
-            if "javascript" in detected_languages or "typescript" in detected_languages:
-                prompt += (
-                    "JavaScript/TypeScript Best Practices:\n"
-                    "- Use const/let instead of var\n"
-                    "- Prefer template literals for string concatenation\n"
-                    "- Use === instead of == for equality comparisons\n"
-                    "- Use async/await for asynchronous operations\n"
-                    "- Avoid eval() and document.write() for security reasons\n"
-                    "- Use parameterized queries for database operations\n"
-                    "- Sanitize user input before using in HTML or SQL contexts\n\n"
-                )
-            
-            if "csharp" in detected_languages:
-                prompt += (
-                    "C# Best Practices:\n"
-                    "- Use using statements for IDisposable resources\n"
-                    "- Prefer async/await over raw Task objects\n"
-                    "- Use proper exception handling with specific catch clauses\n"
-                    "- Use string interpolation instead of string.Format where appropriate\n"
-                    "- Use parameterized queries for SQL operations\n"
-                    "- Follow C# naming conventions (PascalCase for methods, etc.)\n\n"
-                )
-            
-            if "java" in detected_languages:
-                prompt += (
-                    "Java Best Practices:\n"
-                    "- Use try-with-resources for AutoCloseable resources\n"
-                    "- Follow Java naming conventions\n"
-                    "- Use parameterized queries (PreparedStatement) for SQL operations\n"
-                    "- Avoid null pointer exceptions with proper null checking\n"
-                    "- Use StringBuilder for string concatenation in loops\n"
-                    "- Follow Java Bean conventions for data objects\n\n"
-                )
-        
-        # Add information about detected potential issues
-        if potential_issues_detected:
-            prompt += (
-                "The following potential issues were automatically detected in this PR:\n"
-            )
-            
-            for file_entry in file_info:
-                if file_entry.get("potential_issues"):
-                    prompt += f"\n{file_entry['filename']} ({file_entry['language']}):\n"
-                    
-                    for category, count in file_entry["potential_issues"].items():
-                        prompt += f"- {category.replace('_', ' ').title()}: {count} potential issues\n"
-            
-            prompt += (
-                "\nPlease carefully check these files and issue types in your review, "
-                "and provide specific code suggestions to fix any confirmed issues.\n\n"
-            )
     
     # Add cursor rules guidance if available
     if cursor_rules:

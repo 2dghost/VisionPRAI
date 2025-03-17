@@ -124,25 +124,30 @@ class ModelAdapter:
             except Exception as e:
                 error_message = str(e).lower()
                 
-                # Check if it's a rate limiting error
+                # More comprehensive check for rate limiting errors
                 is_rate_limit = any(phrase in error_message for phrase in [
                     "rate limit", "ratelimit", "too many requests", "429", 
-                    "quota exceeded", "capacity", "throttle", "overloaded"
+                    "quota exceeded", "capacity", "throttle", "overloaded",
+                    "too fast", "slow down", "limits exceeded", "service unavailable",
+                    "503", "502", "500", "bandwidth exceeded", "usage limit"
                 ])
                 
                 # On the last attempt, re-raise the exception
                 if attempt == self.max_retries:
-                    logger.error(f"Final retry attempt failed: {str(e)}")
+                    logger.error(f"Final retry attempt failed: {str(e)}", exc_info=True)
                     raise RuntimeError(f"API call failed after {self.max_retries} attempts: {str(e)}")
                 
-                # Calculate backoff with jitter
-                jitter_amount = random.uniform(-self.jitter, self.jitter) * backoff
-                sleep_time = backoff + jitter_amount
+                # Calculate backoff with jitter (full jitter implementation)
+                max_jitter = backoff * (1 + self.jitter)
+                sleep_time = random.uniform(backoff * (1 - self.jitter), max_jitter)
+                
+                # Ensure sleep time doesn't exceed max_backoff
+                sleep_time = min(sleep_time, self.max_backoff)
                 
                 if is_rate_limit:
                     logger.warning(
                         f"Rate limit detected. Retrying in {sleep_time:.2f} seconds. "
-                        f"Attempt {attempt}/{self.max_retries}"
+                        f"Attempt {attempt}/{self.max_retries}. Error: {str(e)}"
                     )
                 else:
                     logger.warning(
@@ -150,8 +155,10 @@ class ModelAdapter:
                         f"Attempt {attempt}/{self.max_retries}"
                     )
                 
-                # Sleep and increase backoff for next attempt
+                # Sleep before retry
                 time.sleep(sleep_time)
+                
+                # Exponential backoff for next attempt
                 backoff = min(backoff * self.backoff_factor, self.max_backoff)
 
     def _call_openai(self, prompt: str) -> str:
