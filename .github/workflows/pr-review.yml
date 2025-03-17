@@ -2,7 +2,12 @@ name: AI PR Review
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [opened, reopened, synchronize]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to review'
+        required: true
 
 jobs:
   review:
@@ -27,6 +32,33 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Debug GitHub context
+        run: |
+          echo "GitHub event name: ${{ github.event_name }}"
+          echo "PR number from github.event.pull_request.number: ${{ github.event.pull_request.number }}"
+          echo "PR number from github.event.inputs.pr_number: ${{ github.event.inputs.pr_number }}"
+          echo "Default PR number from ||: ${{ github.event.pull_request.number || github.event.inputs.pr_number }}"
+
+      - name: Set PR Number
+        id: set-pr
+        run: |
+          PR_NUM=""
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            PR_NUM=${{ github.event.pull_request.number }}
+            echo "Setting PR number from pull_request event: $PR_NUM"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            PR_NUM=${{ github.event.inputs.pr_number }}
+            echo "Setting PR number from workflow_dispatch input: $PR_NUM"
+          fi
+          
+          if [ -z "$PR_NUM" ]; then
+            echo "ERROR: Could not determine PR number"
+            exit 1
+          fi
+          
+          echo "PR_NUM=$PR_NUM" >> $GITHUB_ENV
+          echo "PR number set to: $PR_NUM"
+
       - name: Run AI Review
         env:
           # Use the default GITHUB_TOKEN provided by GitHub Actions
@@ -39,12 +71,15 @@ jobs:
           # GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           # MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
           # HUGGINGFACE_API_KEY: ${{ secrets.HUGGINGFACE_API_KEY }}
-          GITHUB_EVENT_NUMBER: ${{ github.event.pull_request.number }}
+          GITHUB_EVENT_NUMBER: ${{ env.PR_NUM }}
           # Set the Python path to include the current directory
           PYTHONPATH: ${{ github.workspace }}
         run: |
           # Show current directory structure for debugging
           find . -type f -name "*.py" | sort
+          
+          # Show PR number for debugging
+          echo "Using PR number: $GITHUB_EVENT_NUMBER"
           
           # Run the review script
           python src/review_pr.py --verbose

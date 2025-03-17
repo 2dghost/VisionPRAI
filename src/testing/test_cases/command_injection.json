@@ -1,0 +1,40 @@
+{
+  "name": "command_injection",
+  "description": "Code with command injection vulnerabilities",
+  "files": {
+    "system_utils.py": [
+      "def ping_host(hostname):",
+      "    # Vulnerable to command injection",
+      "    result = os.system(f'ping -c 4 {hostname}')",
+      "    return result == 0",
+      "",
+      "def run_git_command(repo_path, command):",
+      "    # Also vulnerable to command injection",
+      "    cmd = f'cd {repo_path} && git {command}'",
+      "    output = subprocess.check_output(cmd, shell=True)",
+      "    return output.decode('utf-8')",
+      "",
+      "def extract_archive(archive_name):",
+      "    # Command injection through string concatenation",
+      "    extract_cmd = 'tar -xzf ' + archive_name + ' -C /tmp/'",
+      "    os.system(extract_cmd)"
+    ]
+  },
+  "expected_comments": [
+    {
+      "path": "system_utils.py",
+      "line": 3,
+      "body": "Command injection vulnerability detected. User input should never be directly included in shell commands. Use subprocess.run() with shell=False and pass arguments as a list."
+    },
+    {
+      "path": "system_utils.py",
+      "line": 8,
+      "body": "Command injection vulnerability detected. Setting shell=True with user-controlled input is dangerous. Use shell=False and pass arguments as a list."
+    },
+    {
+      "path": "system_utils.py",
+      "line": 14,
+      "body": "Command injection vulnerability detected. String concatenation in shell commands with user input can lead to arbitrary command execution. Use subprocess.run() with shell=False."
+    }
+  ]
+} 

@@ -6,8 +6,11 @@ Provides a unified interface for generating responses from different AI models.
 import os
 import json
 import requests
-from typing import Dict, Any, Optional
+import time
+import random
 import logging
+import re
+from typing import Dict, Any, Optional, Callable, Union
 
 
 class ModelAdapter:
@@ -56,6 +59,14 @@ class ModelAdapter:
         self.model = config["model"]
         self.max_tokens = config.get("max_tokens", 1500)
         
+        # Rate limiting configuration
+        self.rate_limit_config = config.get("rate_limiting", {})
+        self.max_retries = self.rate_limit_config.get("max_retries", 5)
+        self.initial_backoff = self.rate_limit_config.get("initial_backoff", 1)
+        self.max_backoff = self.rate_limit_config.get("max_backoff", 60)
+        self.backoff_factor = self.rate_limit_config.get("backoff_factor", 2)
+        self.jitter = self.rate_limit_config.get("jitter", 0.1)
+        
         if not self.api_key:
             raise ValueError(f"API key for {self.provider} not found in config or environment variables")
 
@@ -73,20 +84,119 @@ class ModelAdapter:
             ValueError: If the provider is not supported
             RuntimeError: If the API call fails
         """
-        if self.provider == "openai":
-            return self._call_openai(prompt)
-        elif self.provider == "anthropic":
-            return self._call_anthropic(prompt)
-        elif self.provider == "google":
-            return self._call_google(prompt)
-        elif self.provider == "mistral":
-            return self._call_mistral(prompt)
-        elif self.provider == "ollama":
-            return self._call_ollama(prompt)
-        elif self.provider == "huggingface":
-            return self._call_huggingface(prompt)
-        else:
+        # Map provider to appropriate API call function
+        provider_functions = {
+            "openai": self._call_openai,
+            "anthropic": self._call_anthropic,
+            "google": self._call_google,
+            "mistral": self._call_mistral,
+            "ollama": self._call_ollama,
+            "huggingface": self._call_huggingface
+        }
+        
+        if self.provider not in provider_functions:
             raise ValueError(f"Unsupported provider: {self.provider}")
+        
+        # Call the appropriate function with retry mechanism
+        return self._with_retry(provider_functions[self.provider], prompt)
+    
+    def _with_retry(self, api_call_func: Callable, prompt: str) -> str:
+        """
+        Execute an API call with full jitter exponential backoff for rate limiting.
+        
+        Args:
+            api_call_func: The function to call the API
+            prompt: The prompt to send to the API
+            
+        Returns:
+            The response from the API
+            
+        Raises:
+            RuntimeError: If all retries fail
+        """
+        logger = logging.getLogger("ai-pr-reviewer")
+        backoff = self.initial_backoff
+        attempt = 0
+        
+        while attempt < self.max_retries:
+            attempt += 1
+            try:
+                return api_call_func(prompt)
+            except Exception as e:
+                error_message = str(e).lower()
+                
+                # Enhanced comprehensive check for rate limiting errors with specific provider patterns
+                rate_limit_patterns = [
+                    # General rate limiting phrases
+                    "rate limit", "ratelimit", "too many requests", "429", 
+                    "quota exceeded", "capacity", "throttle", "overloaded",
+                    "too fast", "slow down", "limits exceeded", "service unavailable",
+                    "503", "502", "500", "bandwidth exceeded", "usage limit",
+                    
+                    # Provider-specific patterns
+                    # OpenAI specific
+                    "token rate limit", "tokens per minute", "tokens per day",
+                    "rate_limit_exceeded", "insufficient_quota", "resource_exhausted",
+                    "tpm limit", "rpm limit", "request limit", "usage_limit",
+                    "max_tokens_exceeded", "context_length_exceeded",
+                    "billing quota exceeded", "model capacity", "server busy",
+                    
+                    # Anthropic specific
+                    "rate_limit", "daily_request_limit", "concurrency_limit",
+                    "token_quota_exceeded", "model_overloaded", "capacity_error",
+                    
+                    # Google specific
+                    "resource_exhausted", "quota_exceeded", "user_quota_exceeded",
+                    "resource_limit", "service_resource_exhausted", "daily_limit_exceeded",
+                    
+                    # Mistral specific
+                    "mistral.api_error", "mistral.rate_limit_error", "usage_limits",
+                    "concurrent_requests", "tokens_per_minute", "mistral_capacity",
+                    
+                    # General API errors that might indicate rate limiting
+                    "connection reset", "connection timeout", "socket timeout",
+                    "gateway timeout", "bad gateway", "temporarily unavailable"
+                ]
+                
+                is_rate_limit = any(phrase in error_message for phrase in rate_limit_patterns)
+                
+                # Check for HTTP status codes in the error message
+                status_code_match = re.search(r'(?:status(?:\s+|[_-])code(?:\s+|[:-])|http[/-])(\d+)', error_message)
+                if status_code_match:
+                    status_code = int(status_code_match.group(1))
+                    # Consider these status codes as rate limiting
+                    if status_code in [429, 503, 502, 500, 520, 524, 408, 425, 503]:
+                        is_rate_limit = True
+                        logger.warning(f"Detected rate limiting HTTP status code: {status_code}")
+                
+                # On the last attempt, re-raise the exception
+                if attempt == self.max_retries:
+                    logger.error(f"Final retry attempt failed: {str(e)}", exc_info=True)
+                    raise RuntimeError(f"API call failed after {self.max_retries} attempts: {str(e)}")
+                
+                # Calculate backoff with full jitter implementation
+                # Full jitter formula: random(0, min(cap, base * 2^attempt))
+                current_max = min(self.max_backoff, backoff * (2 ** (attempt - 1)))
+                sleep_time = random.uniform(0, current_max)
+                
+                if is_rate_limit:
+                    logger.warning(
+                        f"Rate limit detected. Implementing full jitter backoff. "
+                        f"Retrying in {sleep_time:.2f} seconds. "
+                        f"Attempt {attempt}/{self.max_retries}. Error: {str(e)}"
+                    )
+                else:
+                    logger.warning(
+                        f"API call failed: {str(e)}. Implementing full jitter backoff. "
+                        f"Retrying in {sleep_time:.2f} seconds. "
+                        f"Attempt {attempt}/{self.max_retries}"
+                    )
+                
+                # Sleep before retry
+                time.sleep(sleep_time)
+                
+                # Exponential backoff for next attempt (will be used in calculating next sleep time)
+                backoff = min(backoff * self.backoff_factor, self.max_backoff)
 
     def _call_openai(self, prompt: str) -> str:
         """Call OpenAI API."""

@@ -136,401 +136,300 @@ def post_review_sections(repo: str, pr_number: str, token: str, review_text: str
     """
     import time
     
-    if not split_sections:
-        return post_review_comment(repo, pr_number, token, review_text)
+    # Try to extract line-specific comments from the review text
+    logger.info("Attempting to extract line comments for GitHub PR review")
     
-    # Use a single comment approach - much simpler and more reliable
-    if True:  # Make this the default behavior
-        # Post a standard review comment with all content
-        return post_review_comment(repo, pr_number, token, review_text)
-    
-    # The following multi-comment approach is currently disabled but kept for reference
-    
-    # Extract sections using markdown headers
-    section_pattern = r'^## (.+?)$(.*?)(?=^## |\Z)'
-    matches = list(re.finditer(section_pattern, review_text, re.MULTILINE | re.DOTALL))
-    
-    overview_sections = []
-    file_sections = {}
-    recommendation_section = None
-    other_sections = []
-    
-    # First pass: categorize sections
-    for match in matches:
-        section_title = match.group(1).strip()
-        section_content = match.group(2).strip()
-        
-        if not section_content:
-            continue
-            
-        section_text = f"## {section_title}\n\n{section_content}"
-        
-        # Identify overview sections
-        if section_title in ["Summary", "Overview of Changes", "Overview"]:
-            overview_sections.append(section_text)
-        # Identify recommendations section
-        elif section_title in ["Recommendations", "Next Steps"]:
-            recommendation_section = section_text
-        # Check if it's a file-specific section (contains filename)
-        elif ":" in section_title or "/" in section_title or "." in section_title:
-            # Extract the filename from the section title
-            filename = section_title.split(":")[0].strip() if ":" in section_title else section_title.strip()
-            
-            # Clean up common prefixes like "File: " or "Analysis: "
-            prefixes_to_remove = ["File", "Analysis", "Review", "Feedback"]
-            for prefix in prefixes_to_remove:
-                if filename.startswith(f"{prefix}:"):
-                    filename = filename[len(prefix)+1:].strip()
-            
-            if filename not in file_sections:
-                file_sections[filename] = []
-            
-            file_sections[filename].append(section_text)
-        # Other sections go to a separate list
-        else:
-            other_sections.append(section_text)
-    
-    # Look for file mentions within other sections
-    file_mention_pattern = r'([a-zA-Z0-9_\-./]+\.[a-zA-Z0-9]{1,5})'
-    
-    # Second pass: check for unlabeled code sections with file mentions
-    for section_text in other_sections:
-        section_lines = section_text.split("\n", 1)
-        if len(section_lines) < 2:
-            continue
-            
-        section_title = section_lines[0].replace("#", "").strip()
-        section_content = section_lines[1].strip()
-        
-        # Try to find file mentions in the content
-        file_mentions = re.findall(file_mention_pattern, section_content)
-        if file_mentions:
-            primary_file = file_mentions[0]  # Use the first file mention
-            if primary_file not in file_sections:
-                file_sections[primary_file] = []
-            file_sections[primary_file].append(section_text)
-        else:
-            # If no file mentions found, add to overview
-            overview_sections.append(section_text)
-    
-    success = True
-    
-    # Function to post with rate limit handling
-    def post_with_retry(content, description):
-        # Only try once, don't retry automatically
+    try:
+        # Make sure we're using the correct import
         try:
-            logger.info(f"Posting {description}")
-            
-            # Check content length - GitHub has a hard limit around 65536 chars
-            if len(content) > 65000:
-                content = content[:65000] + "\n\n*(Comment truncated due to length)*"
-                logger.warning(f"{description} was truncated due to length")
-            
-            # Add a longer delay before posting the last comments to avoid rate limits
-            if comment_count >= 4:  # Later comments are more likely to hit rate limits
-                logger.info(f"Adding extra delay before posting comment #{comment_count+1}")
-                time.sleep(2)
-            
-            success = post_review_comment(repo, pr_number, token, content)
-            # Add a delay to avoid rate limits
-            time.sleep(1)
-            return success
-        except Exception as e:
-            logger.error(f"Error posting {description}: {e}")
-            return False
-    
-    # Limit the number of comments to post to avoid rate limits
-    max_comments = 5  # Reduced from 8 to avoid hitting GitHub limits
-    comment_count = 0
-    
-    # Post overview sections first
-    if overview_sections:
-        overview_text = "\n\n".join(overview_sections)
-        # Truncate if too long
-        if len(overview_text) > 65000:
-            overview_text = overview_text[:65000] + "\n\n*(Comment truncated due to length)*"
+            from comment_extractor import CommentExtractor
+        except ImportError:
+            from src.comment_extractor import CommentExtractor
         
-        overview_success = post_with_retry(overview_text, "overview comment")
-        success = success and overview_success
-        comment_count += 1
-    
-    # Post file-specific sections (limit to avoid rate limits)
-    file_items = list(file_sections.items())
-    
-    # Always group files to reduce comment count
-    grouped_files = {}
-    
-    # Group files by directory
-    for filename, sections in file_items:
-        # Use first directory component as a group key
-        if "/" in filename:
-            group = filename.split("/")[0]
-        else:
-            # Group by file extension
-            parts = filename.split(".")
-            if len(parts) > 1:
-                group = f"{parts[-1].upper()} Files"
+        # Get the diff for the PR to extract line information
+        diff_text = get_pr_diff(repo, pr_number, token)
+        if diff_text:
+            # Parse the diff to get file and line information
+            file_line_map = parse_diff_for_lines(diff_text)
+            logger.info(f"Parsed diff with {len(file_line_map)} files")
+            
+            # Extract line-specific comments
+            extractor = CommentExtractor()
+            line_comments = extractor.extract_line_comments(review_text, file_line_map)
+            
+            if line_comments:
+                logger.info(f"Extracted {len(line_comments)} line-specific comments - using new review API")
+                
+                # Post using the new implementation
+                success = post_review_with_comments(repo, pr_number, token, line_comments, review_text)
+                if success:
+                    logger.info("Successfully posted review with comments using new API")
+                    return True
+                else:
+                    logger.warning("Failed to post review with comments using new API - falling back")
             else:
-                group = "Other Files"
-        
-        if group not in grouped_files:
-            grouped_files[group] = []
-        
-        grouped_files[group].extend([f"### {filename}", *sections])
+                logger.warning("No line comments extracted from review text")
+        else:
+            logger.warning("Could not get PR diff")
+    except Exception as e:
+        logger.error(f"Failed to extract line comments: {str(e)}")
+        # Continue with standard comment posting
     
-    # If still too many groups, consolidate further
-    if len(grouped_files) > max_comments - 2:  # Reserve space for overview and recommendations
-        # Find smallest groups to consolidate
-        groups_by_size = sorted(grouped_files.items(), key=lambda x: len(x[1]))
-        
-        # Keep the largest groups separate, consolidate the rest
-        keep_separate = max_comments - 2
-        consolidated = []
-        
-        for i, (group, sections) in enumerate(groups_by_size):
-            if i >= len(groups_by_size) - keep_separate:
-                # Keep larger groups separate
-                continue
-            
-            # Add to consolidated group
-            consolidated.extend([f"### {group}", *sections])
-            # Remove from grouped_files
-            grouped_files.pop(group)
-        
-        # Add consolidated group if it has content
-        if consolidated:
-            grouped_files["Other Feedback"] = consolidated
-    
-    # Post grouped comments
-    for group, sections in grouped_files.items():
-        if comment_count >= max_comments - 1:
-            logger.warning(f"Skipping remaining {len(grouped_files) - comment_count + 1} file groups due to comment limit")
-            break
-            
-        group_text = f"## Feedback for {group}\n\n" + "\n\n".join(sections)
-        group_success = post_with_retry(group_text, f"grouped files comment ({group})")
-        success = success and group_success
-        comment_count += 1
-    
-    # Post recommendations as their own comment if they exist
-    if recommendation_section and comment_count < max_comments:
-        # Truncate if too long
-        if len(recommendation_section) > 65000:
-            recommendation_section = recommendation_section[:65000] + "\n\n*(Comment truncated due to length)*"
-            
-        rec_success = post_with_retry(recommendation_section, "recommendations comment")
-        success = success and rec_success
-    
-    return success
+    # If we couldn't extract line comments or there was an error, fall back to standard comment
+    logger.info("Falling back to standard review comment")
+    return post_review_comment(repo, pr_number, token, review_text)
 
 
-def post_line_comments(
-    repo: str, 
-    pr_number: str, 
-    token: str, 
-    comments: List[Dict[str, Any]]
-) -> bool:
+def post_line_comments(repo: str, pr_number: str, token: str, comments: List[Dict], overview_text: Optional[str] = None) -> bool:
     """
-    Post line-specific review comments on a pull request.
+    Post line-specific comments on a PR.
     
     Args:
-        repo: Repository in the format 'owner/repo'
-        pr_number: Pull request number
-        token: GitHub token
-        comments: List of comment dictionaries with 'path', 'line', and 'body' keys
+        repo: The repository name in the format "owner/repo"
+        pr_number: The pull request number
+        token: GitHub API token
+        comments: List of comment dictionaries with keys: path, line, position, body
+        overview_text: Optional overview text to post at the top of the review
         
     Returns:
         True if successful, False otherwise
     """
+    logger.info(f"Posting {len(comments)} line comments to PR #{pr_number} in {repo}")
+    
     if not comments:
         logger.warning("No comments to post")
         return True
-        
-    headers = {
-        "Accept": "application/vnd.github.v3+json",
-        "Authorization": f"Bearer {token}",
-        "X-GitHub-Api-Version": "2022-11-28"  # Use explicit API version
-    }
     
-    # Get the latest commit SHA for the PR - required for review comments
     try:
-        commits_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/commits"
-        commits_response = requests.get(commits_url, headers=headers)
-        commits_response.raise_for_status()
-        commits = commits_response.json()
-        if not commits:
-            logger.error("No commits found for PR")
-            return False
-        latest_commit_sha = commits[-1]["sha"]
-        logger.debug(f"Using latest commit SHA: {latest_commit_sha}")
+        # Group comments by file for better organization
+        comments_by_file = {}
+        for comment in comments:
+            file_path = comment.get("path", "unknown")
+            if file_path not in comments_by_file:
+                comments_by_file[file_path] = []
+            comments_by_file[file_path].append(comment)
+            
+        logger.info(f"Comments grouped by file: {len(comments_by_file)} files")
+        
+        # For most GitHub instances, use the draft review approach
+        logger.info("Using draft review approach with file-specific grouping")
+        return create_review_with_individual_comments(repo, pr_number, token, comments, overview_text)
     except Exception as e:
-        logger.error(f"Failed to get latest commit SHA: {str(e)}")
-        return False
-    
-    # Format comments for the API
-    formatted_comments = []
-    for comment in comments:
-        formatted_comment = {
-            "path": comment["path"],
-            "body": comment["body"],
-            "line": int(comment.get("line", 1)),
-            "side": comment.get("side", "RIGHT")
-        }
-        
-        # For multi-line comments, add start_line and start_side
-        if "start_line" in comment:
-            formatted_comment["start_line"] = int(comment["start_line"])
-            formatted_comment["start_side"] = comment.get("start_side", "RIGHT")
-        
-        formatted_comments.append(formatted_comment)
-    
-    # Create a review with comments in a single request
-    # This is the recommended way according to GitHub API docs
-    try:
-        review_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews"
-        
-        review_data = {
-            "commit_id": latest_commit_sha,
-            "event": "COMMENT",  # Submit the review immediately as a COMMENT
-            "body": f"AI PR Review - I've reviewed the changes and left {len(comments)} specific comments on the code.",
-            "comments": formatted_comments
-        }
-        
-        logger.info(f"Creating review with {len(formatted_comments)} comments")
-        logger.debug(f"Review data: commit_id={latest_commit_sha}, event=COMMENT, comments_count={len(formatted_comments)}")
-        
-        # Log a sample comment for debugging
-        if formatted_comments:
-            sample = formatted_comments[0]
-            logger.debug(f"Sample comment: path={sample['path']}, line={sample['line']}, side={sample['side']}")
-            
-        review_response = requests.post(review_url, headers=headers, json=review_data)
-        
-        # Check if the request was successful
-        if review_response.status_code >= 400:
-            error_body = review_response.text
-            logger.error(f"Failed to create review: HTTP {review_response.status_code}: {error_body}")
-            
-            # Try individual comments if bulk creation failed
-            logger.info("Attempting to create review with comments one by one")
-            return create_review_with_individual_comments(repo, pr_number, token, formatted_comments, latest_commit_sha)
-        
-        # Success!
-        review_id = review_response.json().get("id")
-        logger.info(f"Successfully created review #{review_id} with {len(formatted_comments)} comments")
-        return True
-            
-    except Exception as e:
-        logger.error(f"Error creating review: {str(e)}", exc_info=True)
+        logger.error(f"Error posting line comments: {str(e)}", exc_info=True)
         return False
 
 
-def create_review_with_individual_comments(repo, pr_number, token, comments, commit_sha):
-    """Helper function to create a review and add comments one by one."""
-    headers = {
-        "Accept": "application/vnd.github.v3+json",
-        "Authorization": f"Bearer {token}",
-        "X-GitHub-Api-Version": "2022-11-28"
-    }
+def create_review_with_individual_comments(repo: str, pr_number: str, token: str, 
+                                         comments: List[Dict], overview_text: Optional[str] = None) -> bool:
+    """
+    Create a review with individual comments through the GitHub API.
+    This creates a draft review, adds comments to it, then submits it.
     
-    # First create a pending review
-    try:
-        review_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews"
+    Args:
+        repo: The repository in format owner/repo
+        pr_number: The PR number
+        token: GitHub API token
+        comments: List of comment dicts with keys: path, line, position, body
+        overview_text: Optional overview text to include at the top of the review
         
-        pending_data = {
-            "commit_id": commit_sha,
-            "event": "PENDING",
-            "body": "AI PR review in progress..."
-        }
-        
-        pending_response = requests.post(review_url, headers=headers, json=pending_data)
-        pending_response.raise_for_status()
-        
-        review_id = pending_response.json().get("id")
-        if not review_id:
-            logger.error("Failed to get review ID from pending review response")
-            return False
-            
-        logger.debug(f"Created pending review with ID: {review_id}")
-    except Exception as e:
-        logger.error(f"Failed to create pending review: {str(e)}")
-        return False
+    Returns:
+        True if successful, False otherwise
+    """
+    logger.info("*** USING DRAFT REVIEW APPROACH: This creates a draft review, adds comments, then submits it ***")
     
-    # Add comments one by one
-    comments_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews/{review_id}/comments"
+    # Exponential backoff retry parameters
+    max_attempts = 5
+    base_wait_time = 2  # seconds
     
-    success = True
-    for i, comment in enumerate(comments):
+    for attempt in range(1, max_attempts + 1):
         try:
-            # Each comment needs the commit_id
-            comment_data = {
-                "path": comment["path"],
-                "body": comment["body"],
-                "line": comment["line"],
-                "side": comment["side"]
+            # Get the latest commit on the PR for review
+            headers = {
+                "Accept": "application/vnd.github+json",  # Use standard GitHub API media type
+                "Authorization": f"Bearer {token}",
+                "X-GitHub-Api-Version": "2022-11-28"
             }
             
-            # Add optional fields if present
-            if "start_line" in comment:
-                comment_data["start_line"] = comment["start_line"]
-                comment_data["start_side"] = comment.get("start_side", "RIGHT")
+            # Get the PR details to find the latest commit
+            pr_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}"
+            logger.info(f"Fetching PR details to get latest commit SHA")
             
-            logger.debug(f"Adding comment {i+1}/{len(comments)}: {comment['path']}:{comment['line']}")
+            pr_response = requests.get(pr_url, headers=headers)
+            pr_response.raise_for_status()
+            pr_data = pr_response.json()
             
-            comment_response = requests.post(comments_url, headers=headers, json=comment_data)
-            
-            if comment_response.status_code >= 400:
-                logger.error(f"Failed to add comment {i+1}: HTTP {comment_response.status_code}: {comment_response.text}")
-                success = False
-            else:
-                logger.debug(f"Successfully added comment {i+1}/{len(comments)}")
+            # Extract the latest commit SHA
+            head_sha = pr_data.get("head", {}).get("sha")
+            if not head_sha:
+                logger.error("Failed to get latest commit SHA from PR data")
+                return False
                 
-            # Add a delay to avoid rate limits
-            time.sleep(0.5)
-        except Exception as e:
-            logger.error(f"Error adding comment {i+1}: {str(e)}")
-            success = False
-    
-    # Submit the review to publish the comments
-    try:
-        submit_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews/{review_id}/events"
-        
-        submit_data = {
-            "body": f"AI PR Review - I've reviewed the changes and left {len(comments)} specific comments on the code.",
-            "event": "COMMENT"
-        }
-        
-        logger.info(f"Submitting review #{review_id}")
-        
-        submit_response = requests.post(submit_url, headers=headers, json=submit_data)
-        
-        if submit_response.status_code >= 400:
-            logger.error(f"Failed to submit review: HTTP {submit_response.status_code}: {submit_response.text}")
-            return False
+            logger.info(f"Latest commit SHA for PR: {head_sha}")
             
-        logger.info(f"Successfully submitted review with {len(comments)} comments")
-        return success
-    except Exception as e:
-        logger.error(f"Failed to submit review: {str(e)}")
-        return False
+            # Start a new review in PENDING state with the latest commit
+            create_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews"
+            create_data = {
+                "commit_id": head_sha,
+                "event": "PENDING"  # Create a draft review
+            }
+            
+            logger.info("Creating new pending review")
+            create_response = requests.post(create_url, headers=headers, json=create_data)
+            create_response.raise_for_status()
+            review_data = create_response.json()
+            review_id = review_data.get("id")
+            
+            if not review_id:
+                logger.error("Failed to get review ID from response")
+                logger.debug(f"Response data: {review_data}")
+                return False
+            
+            logger.info(f"Created new review with ID: {review_id}")
+            
+            # No need to sleep here as we're explicitly doing API calls in sequence
+                
+            # Do we have any comments to add?
+            if not comments:
+                logger.warning("No comments to add to the review")
+                
+                # If overview text is provided, submit the review anyway with just the body
+                if overview_text:
+                    submit_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews/{review_id}/events"
+                    submit_data = {
+                        "body": overview_text,
+                        "event": "COMMENT"
+                    }
+                    logger.info("Submitting review with overview text only (no comments)")
+                    submit_response = requests.post(submit_url, headers=headers, json=submit_data)
+                    submit_response.raise_for_status()
+                    return True
+                else:
+                    logger.warning("No overview text provided either, skipping review submission")
+                    return False
+            
+            # Group comments by file for better organization
+            comments_by_file = {}
+            for comment in comments:
+                file_path = comment.get("path", "unknown")
+                if file_path not in comments_by_file:
+                    comments_by_file[file_path] = []
+                comments_by_file[file_path].append(comment)
+            
+            logger.info(f"Adding {len(comments)} comments to review (across {len(comments_by_file)} files)")
+            
+            # Add all comments to the review
+            add_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews/{review_id}/comments"
+            
+            # Process each file's comments
+            for file_path, file_comments in comments_by_file.items():
+                logger.info(f"Adding {len(file_comments)} comments for file: {file_path}")
+                
+                for i, comment in enumerate(file_comments):
+                    try:
+                        # Prepare the comment data - critical for correct rendering in Files Changed tab
+                        comment_data = {
+                            "path": comment.get("path"),  # File path relative to repo root
+                            "body": comment.get("body"),  # Comment content
+                            "line": int(comment.get("line", 1)),  # Line number (required)
+                            "side": comment.get("side", "RIGHT")  # Side (RIGHT for new version)
+                        }
+                        
+                        # Position is crucial for correct placement - GitHub API needs diff position
+                        if "position" in comment:
+                            comment_data["position"] = comment.get("position")
+                        
+                        # Handle multi-line comments if needed
+                        if "start_line" in comment and "start_side" in comment:
+                            comment_data["start_line"] = int(comment.get("start_line"))
+                            comment_data["start_side"] = comment.get("start_side")
+                        
+                        logger.debug(f"Adding comment {i+1}/{len(file_comments)} for {file_path}: {comment_data}")
+                        
+                        # Add the comment to the review
+                        add_response = requests.post(add_url, headers=headers, json=comment_data)
+                        add_response.raise_for_status()
+                        
+                        # Brief pause to avoid rate limiting
+                        if i > 0 and i % 10 == 0:
+                            logger.debug(f"Added {i}/{len(file_comments)} comments for {file_path}, pausing briefly")
+                            time.sleep(0.5)
+                    except requests.exceptions.RequestException as e:
+                        # Log the error but continue with other comments
+                        logger.warning(f"Error adding comment {i+1}/{len(file_comments)} for {file_path}: {str(e)}")
+                        if hasattr(e, 'response') and e.response is not None:
+                            logger.debug(f"Response status: {e.response.status_code}, content: {e.response.text[:200]}")
+                
+                # Brief sleep after each file's comments
+                logger.debug(f"Completed comments for {file_path}")
+                time.sleep(0.5)
+            
+            # Finally, submit the review to publish all comments
+            submit_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews/{review_id}/events"
+            
+            # Prepare the submission data with the body containing the overview text
+            submit_data = {
+                "body": overview_text if overview_text else "AI review comments",
+                "event": "COMMENT"  # Can be APPROVE, REQUEST_CHANGES, or COMMENT
+            }
+            
+            logger.info("Submitting review with all comments")
+            submit_response = requests.post(submit_url, headers=headers, json=submit_data)
+            submit_response.raise_for_status()
+            
+            logger.info(f"Successfully submitted review with {len(comments)} comments across {len(comments_by_file)} files")
+            return True
+            
+        except requests.exceptions.RequestException as e:
+            wait_time = base_wait_time * (2 ** (attempt - 1))
+            
+            # Check if we're hitting rate limits
+            if hasattr(e, 'response') and e.response is not None and e.response.status_code == 403:
+                rate_limit_remaining = e.response.headers.get('X-RateLimit-Remaining', '?')
+                rate_limit_reset = e.response.headers.get('X-RateLimit-Reset', '?')
+                
+                logger.warning(f"Possible rate limit hit: Remaining: {rate_limit_remaining}, Reset: {rate_limit_reset}")
+                
+                # If we know when the rate limit resets, wait until then plus a little buffer
+                if rate_limit_reset != '?' and rate_limit_reset.isdigit():
+                    reset_time = int(rate_limit_reset)
+                    current_time = int(time.time())
+                    if reset_time > current_time:
+                        wait_time = min(max(reset_time - current_time + 5, wait_time), 300)  # Cap at 5 minutes
+            
+            if attempt < max_attempts:
+                logger.warning(f"Attempt {attempt} failed: {str(e)}. Retrying in {wait_time} seconds...")
+                time.sleep(wait_time)
+            else:
+                logger.error(f"Failed after {max_attempts} attempts: {str(e)}")
+                if hasattr(e, 'response') and e.response is not None:
+                    logger.debug(f"Final error response: {e.response.status_code}, {e.response.text[:500]}")
+                return False
 
 
-def parse_diff_for_lines(diff_text: str) -> Dict[str, List[Tuple[int, int, str]]]:
+def parse_diff_for_lines(diff_text: str) -> Dict[str, Dict[int, int]]:
     """
-    Parse a diff to extract file paths and line numbers.
-    Useful for posting line-specific comments.
+    Parse a diff to extract file paths, line numbers, and positions in the diff.
+    Useful for posting line-specific comments in GitHub PR reviews.
     
     Args:
         diff_text: The diff text from GitHub
         
     Returns:
-        Dictionary mapping file paths to list of (line_number, position, line_content) tuples
-        where position is the line's position in the diff
+        Dictionary mapping file paths to dictionaries of {line_number: position}
+        where position is the line's position in the diff (critical for GitHub API)
     """
+    if not diff_text or len(diff_text) < 10:
+        logger.warning("Empty or very small diff received")
+        return {}
+        
     result = {}
     current_file = None
     line_number = 0
-    position = 0  # Track position in the diff (still useful for debugging)
+    position = 0
+    
+    # Log the size of the diff for debugging
+    diff_size = len(diff_text)
+    logger.debug(f"Parsing diff with {diff_size} characters")
     
     # Extract filename and line information from diff
     lines = diff_text.split('\n')
@@ -547,7 +446,7 @@ def parse_diff_for_lines(diff_text: str) -> Dict[str, List[Tuple[int, int, str]]
             path_match = re.match(r'\+\+\+ b/(.*)', line)
             if path_match:
                 current_file = path_match.group(1)
-                result[current_file] = []
+                result[current_file] = {}  # Map line numbers to positions
                 line_number = 0
                 logger.debug(f"Processing file: {current_file}")
             position += 1
@@ -570,21 +469,26 @@ def parse_diff_for_lines(diff_text: str) -> Dict[str, List[Tuple[int, int, str]]
         # Increment position for each line in the diff
         position += 1
         
-        # Skip removal lines (-)
+        # Skip removal lines (-) - they don't exist in the new file
         if line.startswith('-'):
             continue
             
-        # Process addition and context lines
-        if line.startswith('+') or not line.startswith('\\'):  # Skip "No newline" markers
+        # Process addition (+) and context lines (not starting with + or -)
+        if line.startswith('+') or (not line.startswith('\\') and not line.startswith('-')):
             if current_file:
                 line_number += 1
-                content = line[1:] if line.startswith('+') else line
-                # Store line number, position, and content
-                result[current_file].append((line_number, position, content))
+                # Store mapping of line number to position in the diff
+                # This is CRITICAL for GitHub PR review API which uses position
+                result[current_file][line_number] = position
     
     # Log file mapping summary
     for file_path, lines in result.items():
         logger.debug(f"Mapped {len(lines)} lines for file {file_path}")
+    
+    # Print overall stats
+    file_count = len(result)
+    total_lines = sum(len(lines) for lines in result.values())
+    logger.info(f"Parsed diff: {file_count} files with {total_lines} lines total")
     
     return result
 
@@ -607,3 +511,349 @@ def extract_code_blocks(text: str) -> List[str]:
         code_blocks.append(match.group(1).strip())
     
     return code_blocks
+
+
+def calculate_position_in_diff(patch: str, target_line: int) -> Optional[int]:
+    """
+    Calculate the position in a diff for a given line number.
+    
+    The position is the line number in the diff, not the line number in the file.
+    This is required by GitHub's API for line comments.
+    
+    Args:
+        patch: The patch string from GitHub's API
+        target_line: The line number in the new file to find the position for
+        
+    Returns:
+        The position in the diff, or None if the line is not found
+    """
+    if not patch:
+        return None
+    
+    # Split the patch into lines
+    lines = patch.split('\n')
+    
+    # Start at position 1 (GitHub's API is 1-indexed for positions)
+    position = 1
+    current_line = 0
+    
+    # Parse the hunk headers to find the right position
+    for line in lines:
+        position += 1  # Increment position for each line in the diff
+        
+        # Check if this is a hunk header
+        if line.startswith('@@'):
+            # Extract the new file start line number (format: @@ -old,count +new,count @@)
+            parts = line.split(' ')
+            if len(parts) >= 3 and parts[2].startswith('+'):
+                new_info = parts[2][1:]  # Remove the + sign
+                new_start = int(new_info.split(',')[0] if ',' in new_info else new_info)
+                current_line = new_start
+                continue
+        
+        # Skip removed lines (starting with '-')
+        if line.startswith('-'):
+            position -= 1  # Don't count removed lines in position
+            continue
+        
+        # For context/added lines, check if we found the target
+        if not line.startswith('@@'):
+            if current_line == target_line:
+                return position - 1  # Return position (adjust for GitHub indexing)
+            
+            # Only increment line number for non-removed lines
+            if not line.startswith('-'):
+                current_line += 1
+    
+    # If we get here, the target line was not found in the diff
+    logger.warning(f"Line {target_line} not found in the diff")
+    return None
+
+
+def post_review_with_comments(repo: str, pr_number: str, token: str, comments: List[Dict[str, Any]], overview_text: str = "") -> bool:
+    """
+    Post a GitHub review with line-specific comments.
+    
+    This function creates a single review with all comments attached to specific lines,
+    ensuring they appear properly in the 'Files Changed' tab.
+    
+    Args:
+        repo: Repository in the format 'owner/repo'
+        pr_number: Pull request number
+        token: GitHub token
+        comments: List of comment dictionaries with 'path', 'line', and 'body' keys
+        overview_text: Optional text for the overall review summary
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    logger.info(f"*** CALLING post_review_with_comments with {len(comments)} comments ***")
+    if overview_text:
+        logger.info("Using provided overview text for the review")
+    
+    if not comments:
+        return post_review_comment(repo, pr_number, token, overview_text)
+        
+    headers = {
+        "Accept": "application/vnd.github.v3+json",
+        "Authorization": f"Bearer {token}",
+        "X-GitHub-Api-Version": "2022-11-28"
+    }
+    
+    # Get the latest commit SHA
+    try:
+        commits_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/commits"
+        commits_response = requests.get(commits_url, headers=headers)
+        commits_response.raise_for_status()
+        latest_commit_sha = commits_response.json()[-1]["sha"]
+        logger.debug(f"Using latest commit SHA: {latest_commit_sha}")
+    except Exception as e:
+        logger.error(f"Failed to get latest commit SHA: {str(e)}")
+        return False
+    
+    # Get file patches for position calculation
+    try:
+        files_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/files"
+        files_response = requests.get(files_url, headers=headers)
+        files_response.raise_for_status()
+        files = files_response.json()
+        
+        # Map files to their patches
+        file_patches = {file["filename"]: file.get("patch", "") for file in files}
+        logger.debug(f"Found {len(files)} files in PR: {', '.join(file_patches.keys())}")
+    except Exception as e:
+        logger.error(f"Failed to get file patches: {str(e)}")
+        return False
+    
+    # Format comments with correct positions
+    review_comments = []
+    for comment in comments:
+        path = comment["path"]
+        line_num = int(comment.get("line", 1))
+        
+        # Calculate position from patch
+        position = None
+        if path in file_patches:
+            position = calculate_position_in_diff(file_patches[path], line_num)
+            logger.debug(f"Calculated position {position} for {path}:{line_num}")
+        
+        if position is not None:
+            review_comment = {
+                "path": path,
+                "position": position,
+                "body": comment["body"],
+                "side": "RIGHT"    # Always comment on the right side (new version)
+            }
+                
+            # Handle multi-line comments if present
+            if "start_line" in comment:
+                review_comment["start_line"] = int(comment["start_line"])
+                review_comment["start_side"] = comment.get("start_side", "RIGHT")
+            
+            review_comments.append(review_comment)
+            logger.debug(f"Added comment for {path}:{line_num} at position {position}")
+        else:
+            logger.warning(f"Could not calculate position for {path}:{line_num}, skipping comment")
+    
+    # If we didn't create any valid review comments, post a regular comment
+    if not review_comments:
+        logger.warning("No valid review comments could be created, posting regular comment instead")
+        combined_text = overview_text
+        if comments:
+            combined_text += "\n\n" + "\n\n".join([f"**{c['path']}:{c['line']}**\n{c['body']}" for c in comments])
+        return post_review_comment(repo, pr_number, token, combined_text)
+    
+    # Use the draft review approach (Method 2) which is more reliable
+    logger.info("Using draft review approach for posting comments")
+    # Pass the overview text for use in the review
+    return create_review_with_individual_comments(repo, pr_number, token, comments, latest_commit_sha, overview_text)
+
+
+def test_github_review_methods(repo: str, pr_number: str, token: str, test_text: str = "Test comment") -> bool:
+    """
+    Test various methods for posting GitHub PR reviews with comments.
+    This function tries multiple approaches to help diagnose issues.
+    
+    Args:
+        repo: Repository in the format 'owner/repo'
+        pr_number: Pull request number
+        token: GitHub token
+        test_text: Test text to include in comments
+        
+    Returns:
+        True if any test succeeded, False if all failed
+    """
+    logger.info("Starting GitHub review methods test")
+    
+    headers = {
+        "Accept": "application/vnd.github.v3+json",
+        "Authorization": f"Bearer {token}",
+        "X-GitHub-Api-Version": "2022-11-28"
+    }
+    
+    # Test 1: Get the latest commit SHA and diff
+    try:
+        # Get commit SHA
+        commits_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/commits"
+        commits_response = requests.get(commits_url, headers=headers)
+        commits_response.raise_for_status()
+        commit_sha = commits_response.json()[-1]["sha"]
+        
+        # Get diff
+        files_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/files"
+        files_response = requests.get(files_url, headers=headers)
+        files_response.raise_for_status()
+        files = files_response.json()
+        
+        if not files:
+            logger.error("No files found in PR")
+            return False
+            
+        # Select first file with a patch
+        test_file = None
+        for file in files:
+            if file.get("patch"):
+                test_file = file
+                break
+                
+        if not test_file:
+            logger.error("No file with patch found in PR")
+            return False
+            
+        filename = test_file["filename"]
+        patch = test_file["patch"]
+        
+        # Parse patch to find a suitable line number
+        line_num = None
+        position = None
+        
+        patch_lines = patch.split("\n")
+        for i, line in enumerate(patch_lines):
+            if line.startswith("+") and not line.startswith("+++"):
+                # Found an added line - find its line number
+                for j in range(i, -1, -1):
+                    if patch_lines[j].startswith("@@"):
+                        # Extract the line number from hunk header
+                        parts = patch_lines[j].split(" ")
+                        if len(parts) >= 3 and parts[2].startswith("+"):
+                            new_info = parts[2][1:]
+                            new_start = int(new_info.split(",")[0] if "," in new_info else new_info)
+                            # Count lines from hunk start to our line
+                            added_lines = 0
+                            for k in range(j+1, i+1):
+                                if not patch_lines[k].startswith("-"):
+                                    added_lines += 1
+                            line_num = new_start + added_lines - 1
+                            position = i + 1  # Position in diff (1-indexed)
+                            break
+                if line_num:
+                    break
+        
+        if not line_num or not position:
+            logger.error("Could not find a suitable line to comment on")
+            return False
+            
+        logger.info(f"Test will use file: {filename}, line: {line_num}, position: {position}")
+        
+        # Test 2: Method 1 - Review with inline comments
+        try:
+            logger.info("Testing Method 1: Review with inline comments")
+            review_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews"
+            
+            review_data = {
+                "commit_id": commit_sha,
+                "body": f"Test review with inline comments - {test_text}",
+                "event": "COMMENT",
+                "comments": [{
+                    "path": filename,
+                    "position": position,
+                    "body": f"Method 1 - Test inline comment - {test_text}"
+                }]
+            }
+            
+            response = requests.post(review_url, headers=headers, json=review_data)
+            status_code = response.status_code
+            logger.info(f"Method 1 status code: {status_code}")
+            logger.debug(f"Method 1 response: {response.text}")
+            
+            if status_code < 400:
+                logger.info("Method 1 succeeded")
+        except Exception as e:
+            logger.error(f"Method 1 error: {str(e)}")
+        
+        # Test 3: Method 2 - Draft review with comments
+        try:
+            logger.info("Testing Method 2: Draft review with comments")
+            review_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews"
+            
+            # Create empty pending review
+            draft_data = {
+                "commit_id": commit_sha,
+                "body": "",
+                "event": "PENDING"
+            }
+            
+            draft_response = requests.post(review_url, headers=headers, json=draft_data)
+            if draft_response.status_code >= 400:
+                logger.error(f"Method 2 failed to create draft review: {draft_response.status_code} - {draft_response.text}")
+            else:
+                review_id = draft_response.json().get("id")
+                
+                if not review_id:
+                    logger.error("Method 2 failed to get review ID")
+                else:
+                    # Add a comment to the review
+                    comment_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews/{review_id}/comments"
+                    comment_data = {
+                        "path": filename,
+                        "position": position,
+                        "body": f"Method 2 - Test comment on draft review - {test_text}"
+                    }
+                    
+                    comment_response = requests.post(comment_url, headers=headers, json=comment_data)
+                    if comment_response.status_code >= 400:
+                        logger.error(f"Method 2 failed to add comment: {comment_response.status_code} - {comment_response.text}")
+                    else:
+                        # Submit the review
+                        submit_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews/{review_id}/events"
+                        submit_data = {
+                            "body": f"Method 2 - Test draft review submission - {test_text}",
+                            "event": "COMMENT"
+                        }
+                        
+                        submit_response = requests.post(submit_url, headers=headers, json=submit_data)
+                        status_code = submit_response.status_code
+                        logger.info(f"Method 2 status code: {status_code}")
+                        logger.debug(f"Method 2 response: {submit_response.text}")
+                        
+                        if status_code < 400:
+                            logger.info("Method 2 succeeded")
+        except Exception as e:
+            logger.error(f"Method 2 error: {str(e)}")
+        
+        # Test 4: Method 3 - Direct comment on PR
+        try:
+            logger.info("Testing Method 3: Direct comments on PR")
+            comment_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/comments"
+            
+            comment_data = {
+                "body": f"Method 3 - Direct PR comment - {test_text}",
+                "commit_id": commit_sha,
+                "path": filename,
+                "position": position
+            }
+            
+            response = requests.post(comment_url, headers=headers, json=comment_data)
+            status_code = response.status_code
+            logger.info(f"Method 3 status code: {status_code}")
+            logger.debug(f"Method 3 response: {response.text}")
+            
+            if status_code < 400:
+                logger.info("Method 3 succeeded")
+        except Exception as e:
+            logger.error(f"Method 3 error: {str(e)}")
+        
+        return True
+    except Exception as e:
+        logger.error(f"Test failed: {str(e)}")
+        return False

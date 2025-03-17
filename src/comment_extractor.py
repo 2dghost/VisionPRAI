@@ -119,36 +119,139 @@ class CommentExtractor:
 
     @with_context
     def validate_file_path(self, file_path: str, file_line_map: Dict[str, List[Tuple[int, int, str]]]) -> bool:
-        """Check if a file path exists in the file line map."""
+        """
+        Validate a file path exists in the diff.
+        
+        Args:
+            file_path: The file path to validate
+            file_line_map: Mapping of file paths to (line_num, position, content)
+            
+        Returns:
+            True if the file path exists in the diff, False otherwise
+        """
+        # First check exact match
         if file_path in file_line_map:
             return True
             
-        # Try to find a similar file name (often just the filename vs full path issue)
-        for known_path in file_line_map.keys():
-            if known_path.endswith(file_path) or file_path.endswith(known_path):
+        # Try with normalized path
+        normalized_path = self.normalize_file_path(file_path)
+        if normalized_path in file_line_map:
+            return True
+            
+        # Try to find a matching file name
+        for diff_file in file_line_map:
+            if diff_file.endswith('/' + file_path) or diff_file.endswith('/' + normalized_path):
                 return True
                 
+        self.logger.warning(f"File path '{file_path}' not found in diff")
         return False
-
+    
     @with_context
-    def validate_line_number(self, file_path: str, line_num: int, 
-                            file_line_map: Dict[str, List[Tuple[int, int, str]]]) -> bool:
+    def normalize_file_path(self, file_path: str) -> str:
         """
-        Validate that a line number exists in the file's diff.
+        Normalize a file path by removing leading/trailing whitespace and quotes.
         
         Args:
-            file_path: Path to the file
-            line_num: Line number to validate
-            file_line_map: Mapping of files to their line numbers and positions
+            file_path: The file path to normalize
             
         Returns:
-            True if the line number is valid, False otherwise
+            Normalized file path
+        """
+        # Remove leading/trailing whitespace
+        normalized = file_path.strip()
+        
+        # Remove quotes
+        for quote in ['"', "'", "`"]:
+            if normalized.startswith(quote) and normalized.endswith(quote):
+                normalized = normalized[1:-1]
+                break
+                
+        # Remove leading ./ or / if present
+        if normalized.startswith('./'):
+            normalized = normalized[2:]
+        elif normalized.startswith('/'):
+            normalized = normalized[1:]
+            
+        return normalized
+
+    @with_context
+    def find_matching_file_path(self, file_path: str, file_line_map: Dict[str, List[Tuple[int, int, str]]]) -> str:
+        """
+        Find a matching file path in the diff.
+        
+        Args:
+            file_path: The file path to match
+            file_line_map: Mapping of file paths to (line_num, position, content)
+            
+        Returns:
+            The matching file path from the diff, or the original file path if no match
+        """
+        # First try exact match
+        if file_path in file_line_map:
+            return file_path
+        
+        # Normalize the file path
+        normalized_path = self.normalize_file_path(file_path)
+        if normalized_path in file_line_map:
+            self.logger.debug(f"Found normalized match for '{file_path}': '{normalized_path}'")
+            return normalized_path
+            
+        # Try to find a relative path match
+        for diff_file in file_line_map:
+            if diff_file.endswith('/' + file_path) or diff_file.endswith('/' + normalized_path):
+                self.logger.debug(f"Found partial match for '{file_path}': '{diff_file}'")
+                return diff_file
+                
+        # Try filename only match as a last resort
+        file_name = os.path.basename(file_path)
+        matching_files = [f for f in file_line_map.keys() if os.path.basename(f) == file_name]
+        if len(matching_files) == 1:  # Only if there's a single unambiguous match
+            self.logger.debug(f"Found filename match for '{file_path}': '{matching_files[0]}'")
+            return matching_files[0]
+            
+        self.logger.warning(f"No matching file found for '{file_path}', using as is")
+        return file_path
+
+    @with_context
+    def validate_line_number(self, file_path: str, line_num: int, file_line_map: Dict[str, List[Tuple[int, int, str]]]) -> int:
+        """
+        Validate and adjust line number if needed to ensure it exists in the diff.
+        
+        Args:
+            file_path: File path
+            line_num: Line number to validate
+            file_line_map: Mapping of file paths to line information
+            
+        Returns:
+            Adjusted line number that exists in the diff, or original if file not found
         """
         if file_path not in file_line_map:
-            return False
+            # Try to find a matching file
+            matching_file = self.find_matching_file_path(file_path, file_line_map)
+            if matching_file != file_path and matching_file in file_line_map:
+                file_path = matching_file
+            else:
+                # File not found, can't validate line number
+                self.logger.warning(f"Cannot validate line number for {file_path} - file not in diff")
+                return line_num
             
-        # Check if the line number exists in the file's diff
-        return any(line == line_num for line, _, _ in file_line_map[file_path])
+        # Get line info for the file
+        line_info = file_line_map[file_path]
+        
+        # Check if the exact line number exists
+        for info in line_info:
+            if info[0] == line_num:  # info[0] is the new line number
+                return line_num
+            
+        # Find the closest valid line number
+        valid_line_nums = [info[0] for info in line_info]
+        if not valid_line_nums:
+            self.logger.warning(f"No valid lines found for {file_path}")
+            return line_num
+        
+        closest_line = min(valid_line_nums, key=lambda x: abs(x - line_num))
+        self.logger.info(f"Adjusted line number for {file_path} from {line_num} to {closest_line}")
+        return closest_line
 
     @with_context
     def match_comment_patterns(self, review_text: str) -> List[Dict[str, Any]]:
@@ -220,176 +323,109 @@ class CommentExtractor:
         return comment_text
 
     @with_context
-    def extract_line_comments(self, review_text: str, 
-                             file_line_map: Dict[str, List[Tuple[int, int, str]]]) -> List[Dict[str, Any]]:
+    def extract_comments(self, review_text: str, file_line_positions: Dict[str, Dict[int, int]]) -> List[Dict[str, Any]]:
         """
-        Extract line-specific comments from review text.
+        Extract line-specific comments from review text using the new position mapping format.
         
         Args:
-            review_text: The review text to extract comments from
-            file_line_map: Mapping of files to their line numbers and positions
+            review_text: The text containing comments
+            file_line_positions: Mapping of file paths to {line_number: position} dictionaries
             
         Returns:
-            List of comment dictionaries with 'path', 'line', and 'body' keys
+            A list of comment dictionaries with path, line, position, and body keys
             
         Raises:
             CommentExtractionError: If comment extraction fails
         """
-        try:
-            # Find all pattern matches
-            matches = self.match_comment_patterns(review_text)
+        if not review_text:
+            self.logger.warning("Empty review text provided")
+            return []
             
-            # Extract and validate comments
-            comments = []
+        if not file_line_positions:
+            self.logger.warning("No file line positions provided, comments may not be correctly linked to lines")
             
-            # Log the available files in the diff for debugging
-            self.logger.debug(f"Available files in diff: {list(file_line_map.keys())}")
+        # First extract file-specific comment sections
+        self.logger.info("Extracting file-specific comments from review text")
+        
+        # Match explicit file comment patterns (e.g. ### file.py:123)
+        comment_matches = self.match_comment_patterns(review_text)
+        self.logger.info(f"Found {len(comment_matches)} potential comment matches")
+        
+        # Extract and validate comments
+        valid_comments = []
+        
+        for match in comment_matches:
+            file_path = match.get("file_path", "")
+            line_num = match.get("line_number", 0)
             
-            # Primary pattern for file-specific comments with code suggestions
-            primary_pattern = r'### ([^:\n]+):(\d+)\s*\n(.*?)(?=\n### [^:\n]+:\d+|\Z)'
+            # Normalize the file path
+            file_path = self.normalize_file_path(file_path)
             
-            # Try to find all file-specific comments with the primary pattern
-            primary_matches = list(re.finditer(primary_pattern, review_text, re.DOTALL))
-            self.logger.debug(f"Found {len(primary_matches)} primary file-specific comments")
-            
-            # Process primary matches first (these are the most reliable)
-            for match in primary_matches:
-                file_path = match.group(1).strip()
-                line_num = int(match.group(2))
-                content = match.group(3).strip()
-                
-                self.logger.debug(f"Processing primary file-specific comment: {file_path}:{line_num}")
-                
-                # Check if the file exists in the diff
-                if not self.validate_file_path(file_path, file_line_map):
-                    self.logger.warning(f"File {file_path} not found in diff, checking for similar files")
-                    # Try to find a similar file name
-                    similar_files = [f for f in file_line_map.keys() if f.endswith(file_path) or file_path.endswith(f)]
-                    if similar_files:
-                        file_path = similar_files[0]
-                        self.logger.info(f"Using similar file {file_path} instead")
-                    else:
-                        self.logger.warning(f"No similar file found for {file_path}, skipping comment")
-                        continue
-                        
-                # GitHub API requires 'line' and 'side' parameters - do not use 'position'
-                comment_data = {
-                    "path": file_path,
-                    "line": line_num,
-                    "side": "RIGHT",  # Always comment on the new version
-                    "body": content
-                }
-                
-                comments.append(comment_data)
-                self.logger.debug(f"Added comment for {file_path}:{line_num}")
-                
-            # Try alternative patterns if we didn't find enough primary matches
-            if len(primary_matches) < 3:
-                # Alternative patterns to try
-                alternative_patterns = [
-                    # "In file X, line Y:" format
-                    r'(?:^|\n)(?:In|At) ([^,\n]+),\s*line (\d+):(.*?)(?=\n(?:In|At) [^,\n]+,\s*line \d+:|\Z)',
-                    # "filename.ext line Y:" format
-                    r'(?:^|\n)([^:\s\n]+)\s+line\s+(\d+):(.*?)(?=\n[^:\s\n]+\s+line\s+\d+:|\Z)',
-                    # "File: filename.ext, Line: Y" format
-                    r'(?:^|\n)File:\s*([^,\n]+),\s*Line:\s*(\d+)(.*?)(?=\n(?:File:|In|At)|\Z)'
-                ]
-                
-                for pattern_idx, pattern in enumerate(alternative_patterns):
-                    alt_matches = list(re.finditer(pattern, review_text, re.DOTALL))
-                    self.logger.debug(f"Found {len(alt_matches)} matches with alternative pattern {pattern_idx+1}")
-                    
-                    for match in alt_matches:
-                        file_path = match.group(1).strip()
-                        line_num = int(match.group(2))
-                        content = match.group(3).strip()
-                        
-                        self.logger.debug(f"Processing alternative match: {file_path}:{line_num}")
-                        
-                        # Check if the file exists in the diff
-                        if not self.validate_file_path(file_path, file_line_map):
-                            self.logger.warning(f"File {file_path} not found in diff, checking for similar files")
-                            # Try to find a similar file name
-                            similar_files = [f for f in file_line_map.keys() if f.endswith(file_path) or file_path.endswith(f)]
-                            if similar_files:
-                                file_path = similar_files[0]
-                                self.logger.info(f"Using similar file {file_path} instead")
-                            else:
-                                self.logger.warning(f"No similar file found for {file_path}, skipping comment")
-                                continue
-                                
-                        # GitHub API requires 'line' and 'side' parameters - do not use 'position'
-                        comment_data = {
-                            "path": file_path,
-                            "line": line_num,
-                            "side": "RIGHT",
-                            "body": content
-                        }
-                        
-                        comments.append(comment_data)
-                        self.logger.debug(f"Added comment for {file_path}:{line_num}")
-            
-            # Process standard pattern matches
-            for match in matches:
-                file_path = match["file"]
-                line_num = match["line"]
-                
-                # Skip if we already have a comment for this file and line
-                if any(c["path"] == file_path and c["line"] == line_num for c in comments):
-                    self.logger.debug(f"Skipping duplicate comment for {file_path}:{line_num}")
+            # Find the matching file path in our map
+            if file_path not in file_line_positions:
+                # Try to find a similar file path
+                file_path = self.find_matching_file_path(file_path, file_line_positions)
+                if not file_path:
+                    self.logger.warning(f"No matching file found for {match.get('file_path', 'unknown')}")
                     continue
-                
-                # Extract comment text
-                comment_text = self.extract_comment_text(review_text, match)
-                
-                # Validate file path
-                if not self.validate_file_path(file_path, file_line_map):
-                    self.logger.warning(f"File {file_path} not found in diff, checking for similar files")
-                    # Try to find a similar file name
-                    similar_files = [f for f in file_line_map.keys() if f.endswith(file_path) or file_path.endswith(f)]
-                    if similar_files:
-                        file_path = similar_files[0]
-                        self.logger.info(f"Using similar file {file_path} instead")
-                    else:
-                        self.logger.warning(f"No similar file found for {file_path}, skipping comment")
-                        continue
-                
-                # GitHub API requires 'line' and 'side' parameters
-                comment_data = {
-                    "path": file_path,
-                    "line": line_num,
-                    "side": "RIGHT",
-                    "body": comment_text
-                }
-                
-                comments.append(comment_data)
-                self.logger.debug(f"Added comment for {file_path}:{line_num}")
             
-            # Final validation to ensure all comments have required fields
-            for comment in comments:
-                # Make sure line is an integer
-                if isinstance(comment["line"], str):
-                    comment["line"] = int(comment["line"])
+            # Extract the comment text associated with this match
+            comment_text = self.extract_comment_text(review_text, match)
+            if not comment_text:
+                self.logger.warning(f"Empty comment text for {file_path}:{line_num}")
+                continue
                 
-                # Verify each comment has the GitHub-required fields
-                if "path" not in comment or "line" not in comment or "body" not in comment:
-                    missing = [f for f in ["path", "line", "body"] if f not in comment]
-                    self.logger.warning(f"Comment missing required fields: {', '.join(missing)}")
-                
-                # Ensure side is RIGHT for all comments
-                comment["side"] = "RIGHT"
-                
-                # For multi-line comments, ensure start_side is set if start_line is present
-                if "start_line" in comment and "start_side" not in comment:
-                    comment["start_side"] = "RIGHT"
+            # Get position from our mapping
+            if line_num in file_line_positions[file_path]:
+                position = file_line_positions[file_path][line_num]
+                self.logger.debug(f"Found position {position} for {file_path}:{line_num}")
+            else:
+                # Try to find the nearest line number with a position
+                nearest_line = self.find_nearest_line(line_num, file_line_positions[file_path])
+                if nearest_line is None:
+                    self.logger.warning(f"No position found for {file_path}:{line_num}")
+                    continue
+                    
+                position = file_line_positions[file_path][nearest_line]
+                self.logger.info(f"Using nearest line {nearest_line} with position {position} for {file_path}:{line_num}")
+                line_num = nearest_line  # Update line number to the one we found
             
-            self.logger.info(f"Extracted {len(comments)} line-specific comments")
-            return comments
+            # Create comment object
+            comment = {
+                "path": file_path,
+                "line": line_num,
+                "position": position,
+                "body": comment_text,
+                "side": "RIGHT"  # Commenting on the new version
+            }
             
-        except Exception as e:
-            error_message = f"Failed to extract line comments: {str(e)}"
-            self.logger.error(error_message, exc_info=True)
-            raise CommentExtractionError(error_message, error_code="EXTRACT_LINE_COMMENTS_ERROR") from e
+            self.logger.debug(f"Added comment for {file_path}:{line_num} with position {position}")
+            valid_comments.append(comment)
+            
+        self.logger.info(f"Extracted {len(valid_comments)} validated comments from {len(comment_matches)} matches")
+        return valid_comments
+
+    def find_nearest_line(self, target_line: int, line_positions: Dict[int, int]) -> Optional[int]:
+        """
+        Find the nearest line number in the map to the target line.
+        
+        Args:
+            target_line: The line number to find
+            line_positions: Dictionary mapping line numbers to positions
+            
+        Returns:
+            The nearest line number or None if no lines are available
+        """
+        if not line_positions:
+            return None
+            
+        if target_line in line_positions:
+            return target_line
+            
+        # Find the closest line by absolute difference
+        line_numbers = list(line_positions.keys())
+        nearest_line = min(line_numbers, key=lambda x: abs(x - target_line))
+        return nearest_line
 
 
 # Legacy function for backward compatibility

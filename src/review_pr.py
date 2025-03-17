@@ -13,6 +13,8 @@ import re
 import yaml
 from typing import Dict, List, Optional, Any, Tuple
 import time
+import requests
+from datetime import datetime
 
 import sys
 import os
@@ -34,12 +36,14 @@ try:
     )
     from comment_extractor import CommentExtractor
     from file_filter import FileFilter
+    from language_detector import LanguageDetector, detect_language, detect_issues
     from custom_exceptions import (
         VisionPRAIError,
         ConfigurationError,
         MissingConfigurationError,
         InvalidConfigurationError,
-        CommentExtractionError
+        CommentExtractionError,
+        LanguageDetectionError
     )
     from logging_config import get_logger, with_context
 except ImportError:
@@ -56,12 +60,14 @@ except ImportError:
     )
     from src.comment_extractor import CommentExtractor
     from src.file_filter import FileFilter
+    from src.language_detector import LanguageDetector, detect_language, detect_issues
     from src.custom_exceptions import (
         VisionPRAIError,
         ConfigurationError,
         MissingConfigurationError, 
         InvalidConfigurationError,
-        CommentExtractionError
+        CommentExtractionError,
+        LanguageDetectionError
     )
     from src.logging_config import get_logger, with_context
 
@@ -162,14 +168,23 @@ def get_environment_variables() -> Tuple[str, str, str]:
     if not github_token:
         logger.error("GITHUB_TOKEN environment variable is required")
         raise MissingConfigurationError("GITHUB_TOKEN")
+    
+    # Debug log all environment variables related to GitHub events
+    logger.debug("Environment variables:")
+    for key in sorted(os.environ.keys()):
+        if "GITHUB" in key:
+            # Mask token values for security
+            value = os.environ[key]
+            if "TOKEN" in key:
+                value = "***" if value else "not set"
+            logger.debug(f"  {key}: {value}")
         
     # Get repository and PR number
     if "GITHUB_REPOSITORY" in os.environ and "GITHUB_EVENT_NUMBER" in os.environ:
         # Running in GitHub Actions
         repo = os.environ["GITHUB_REPOSITORY"]
         pr_number = os.environ["GITHUB_EVENT_NUMBER"]
-        logger.debug("Running in GitHub Actions environment", 
-                    context={"repo": repo, "pr_number": pr_number})
+        logger.info(f"Running in GitHub Actions environment (repo: {repo}, PR #: {pr_number})")
     else:
         # Running locally
         repo = os.environ.get("PR_REPOSITORY")
@@ -215,6 +230,9 @@ def generate_prompt(diff: str, files: List[Dict[str, Any]], config: Dict[str, An
     file_filtering_enabled = config.get("review", {}).get("file_filtering", {}).get("enabled", False)
     exclude_patterns = config.get("review", {}).get("file_filtering", {}).get("exclude_patterns", [])
     
+    # Check if language detection is enabled
+    language_detection_enabled = config.get("review", {}).get("language_detection", {}).get("enabled", False)
+    
     # Get review format settings
     format_config = config.get("review", {}).get("format", {})
     include_summary = format_config.get("include_summary", True)
@@ -225,41 +243,155 @@ def generate_prompt(diff: str, files: List[Dict[str, Any]], config: Dict[str, An
     
     # Extract relevant file info
     file_info = []
-    for file in files:
-        file_info.append({
-            "filename": file["filename"],
-            "status": file["status"],
-            "additions": file["additions"],
-            "deletions": file["deletions"],
-            "changes": file["changes"]
-        })
+    
+    # If language detection is enabled, add language information to file info
+    if language_detection_enabled:
+        language_detector = LanguageDetector(config_path=config.get("config_path", "config.yaml"))
+        
+        for file in files:
+            language = language_detector.detect_language(file["filename"])
+            file_info_entry = {
+                "filename": file["filename"],
+                "status": file["status"],
+                "additions": file["additions"],
+                "deletions": file["deletions"],
+                "changes": file["changes"],
+                "language": language
+            }
+            
+            # Only add detailed language analysis for non-binary files that can be analyzed
+            if file.get("patch") and language != "unknown":
+                try:
+                    # Extract code from the patch
+                    code_content = file.get("patch", "")
+                    # Detect potential issues
+                    detected_issues = language_detector.detect_issues(file["filename"], code_content)
+                    
+                    # Only add if there are issues
+                    if detected_issues:
+                        file_info_entry["potential_issues"] = {}
+                        for category, issues in detected_issues.items():
+                            issue_count = len(issues)
+                            if issue_count > 0:
+                                file_info_entry["potential_issues"][category] = issue_count
+                except Exception as e:
+                    logger.warning(f"Error detecting issues in {file['filename']}: {str(e)}")
+            
+            file_info.append(file_info_entry)
+    else:
+        # Default file info without language detection
+        for file in files:
+            file_info.append({
+                "filename": file["filename"],
+                "status": file["status"],
+                "additions": file["additions"],
+                "deletions": file["deletions"],
+                "changes": file["changes"]
+            })
     
     # Create a comprehensive prompt
     prompt = (
         "You are an expert code reviewer following best practices. "
         "Analyze this PR diff and provide detailed, constructive feedback with concrete code improvements.\n"
         f"{focus_areas}\n\n"
+    )
+    
+    # Add language-specific guidance if language detection is enabled
+    if language_detection_enabled and file_info:
+        # Collect detected languages
+        languages = set()
+        for file in file_info:
+            if "language" in file and file["language"] != "unknown":
+                languages.add(file["language"])
+                
+        # Add language-specific guidance section to the prompt
+        if languages:
+            prompt += "## Language-Specific Guidance\n\n"
+            
+            for language in sorted(languages):
+                if language == "python":
+                    prompt += "### Python Best Practices\n"
+                    prompt += "- Use type hints for better maintainability and IDE support\n"
+                    prompt += "- Prefer context managers (with statements) for resource management\n"
+                    prompt += "- Use f-strings instead of older string formatting methods\n"
+                    prompt += "- Follow PEP 8 style guidelines\n"
+                    prompt += "- Use specific exception types rather than generic Exception or bare except\n"
+                    prompt += "- Validate user inputs before using in SQL queries to prevent injection\n\n"
+                elif language == "javascript" or language == "typescript":
+                    prompt += f"### {language.capitalize()} Best Practices\n"
+                    prompt += "- Prefer const and let over var\n"
+                    prompt += "- Use === instead of == for comparisons\n"
+                    prompt += "- Validate user inputs before adding to DOM or using in queries\n"
+                    prompt += "- Avoid direct DOM manipulation when using frameworks\n"
+                    prompt += "- Use async/await instead of raw Promises when possible\n"
+                    if language == "typescript":
+                        prompt += "- Avoid using 'any' type except when absolutely necessary\n"
+                        prompt += "- Prefer interfaces for object shapes over type aliases\n"
+                        prompt += "- Use non-null assertion operator (!.) sparingly\n"
+                    prompt += "\n"
+                elif language == "java":
+                    prompt += "### Java Best Practices\n"
+                    prompt += "- Use try-with-resources for AutoCloseable resources\n"
+                    prompt += "- Prefer prepared statements for SQL queries\n"
+                    prompt += "- Follow standard naming conventions (camelCase for methods/variables)\n"
+                    prompt += "- Properly handle exceptions with specific catch blocks\n"
+                    prompt += "- Use StringBuilder for string concatenation in loops\n\n"
+                elif language == "csharp":
+                    prompt += "### C# Best Practices\n"
+                    prompt += "- Use 'using' statements for IDisposable resources\n"
+                    prompt += "- Prefer async/await over Task.Continue patterns\n"
+                    prompt += "- Use parameterized queries for database operations\n"
+                    prompt += "- Prefer properties over public fields\n"
+                    prompt += "- Follow standard naming conventions (PascalCase for public members)\n\n"
+                elif language == "php":
+                    prompt += "### PHP Best Practices\n"
+                    prompt += "- Use prepared statements for SQL queries\n"
+                    prompt += "- Always validate and sanitize user input\n"
+                    prompt += "- Follow PSR standards for code formatting\n"
+                    prompt += "- Use type declarations (PHP 7+)\n"
+                    prompt += "- Avoid using the @ error suppression operator\n\n"
+                elif language == "go":
+                    prompt += "### Go Best Practices\n"
+                    prompt += "- Handle errors explicitly, don't use _ to ignore them\n"
+                    prompt += "- Use context for cancellation and timeouts\n"
+                    prompt += "- Follow Go's standard formatting (gofmt)\n"
+                    prompt += "- Prefer composition over inheritance\n"
+                    prompt += "- Use meaningful variable names (not single letters)\n\n"
+            
+            prompt += "\n"
+    
+    prompt += (
         "CRITICAL: For each issue, you MUST format your line-specific comments exactly like this:\n\n"
         "### filename.ext:line_number\n"
         "Problem: <clear explanation of the issue>\n\n"
         "```suggestion\n"
         "<exact code that should replace the original code>\n"
         "```\n\n"
-        "Explanation: <why this change improves the code>\n\n"
+        "Explanation: <why this change improves the code, including technical rationale, potential bugs prevented, and relevant best practices>\n\n"
         "Guidelines:\n"
         "1. ALWAYS include the file name and line number in the header (### filename.ext:line_number)\n"
         "2. Each suggestion must be preceded by a clear explanation of the issue\n"
         "3. The suggestion block must contain the complete fixed code\n"
-        "4. After each suggestion, explain why your solution is better\n"
+        "4. After each suggestion, provide a DETAILED explanation including:\n"
+        "   - Technical reasoning behind the change\n"
+        "   - Specific bugs or issues prevented\n"
+        "   - How it follows best practices or patterns used elsewhere in the codebase\n"
+        "   - Performance, security, or maintainability benefits\n"
+        "   - Any relevant documentation or standards that support your suggestion\n"
+        "   - Educational explanations of the concepts involved for less experienced developers\n"
+        "   - Links to relevant documentation or resources when appropriate\n"
+        "   - Alternative approaches that could also solve the issue and their trade-offs\n"
         "5. Make suggestions ONLY for lines that exist in the diff\n"
         "6. If you find ANY issues, you MUST provide at least one code suggestion\n"
         "7. IMPORTANT: Each file-specific comment MUST start with '### filename.ext:line_number' format\n"
-        "8. DO NOT use any other format for file-specific comments\n"
-        "9. ALWAYS include file-specific comments in the 'File-Specific Comments' section\n"
-        "10. NEVER skip providing file-specific comments - they are the most important part of the review\n"
-        "11. NEVER provide general recommendations without specific code changes\n"
-        "12. ALL recommendations MUST be in the form of specific code changes with file and line references\n"
-        "13. DO NOT suggest 'Consider refactoring...' or similar vague recommendations - always provide exact code changes\n\n"
+        "8. Educational Context: For each issue, explain the underlying programming concepts to help developers learn\n"
+        "9. Best Practices References: Cite specific industry standards, style guides, or documentation\n"
+        "10. Security Implications: Always highlight security implications when relevant\n"
+        "11. Performance Considerations: Include performance impacts of problematic code and improvements\n"
+        "12. Alternative Approaches: Provide at least one alternative solution with pros and cons\n"
+        "13. Code Quality Metrics: Explain how your suggestion improves maintainability, readability, or testability\n"
+        "14. Common Pitfalls: Explain common mistakes related to the issue to help prevent similar problems\n"
+        "15. Cross-Language Context: When applicable, compare how similar patterns work in other languages\n"
     )
     
     # Add cursor rules guidance if available
@@ -308,6 +440,16 @@ def generate_prompt(diff: str, files: List[Dict[str, Any]], config: Dict[str, An
         "This section MUST contain at least one file-specific comment for each file with issues.\n"
         "IMPORTANT: This section is required and will be used to post comments on specific lines of code.\n"
         "DO NOT provide general recommendations - ONLY specific code changes with file and line references.\n"
+        "ENSURE each explanation is detailed and educational, including:\n"
+        "- The technical reasoning behind the suggested change\n"
+        "- Potential issues or bugs prevented by the change\n"
+        "- How the change improves code quality, performance, or security\n"
+        "- Any relevant best practices, patterns or standards that support the suggestion\n"
+        "- Educational context to help less experienced developers understand WHY the change matters\n"
+        "- References to documentation or resources when applicable\n"
+        "- Alternative approaches that could also solve the issue with their trade-offs\n"
+        "- Examples of how the issue could manifest in production environments\n"
+        "- For security issues, explanation of attack vectors and mitigation strategies\n"
     )
     
     if include_recommendations:
@@ -334,9 +476,171 @@ def generate_prompt(diff: str, files: List[Dict[str, Any]], config: Dict[str, An
         "- Use the EXACT section headers shown above (## Summary, ## Overview of Changes, etc.)\n"
         "- NEVER provide general recommendations without specific code changes\n"
         "- ALL recommendations MUST be in the form of specific code changes with file and line references\n"
+        "- Provide comprehensive explanations that help developers learn and improve their coding skills\n"
+        "- Include context about why your suggestions follow best practices or improve the codebase\n"
+        "- Make your explanations educational for programmers of all skill levels\n"
+        "- Include specific examples, not just vague assertions\n"
+        "- Cite relevant documentation, standards, or articles when appropriate\n"
+        "- For each alternative approach mentioned, explain why you chose your suggested approach\n"
+        "- Tailor your explanations to the apparent experience level of the developer\n"
     )
     
     return prompt
+
+
+@with_context
+def get_existing_reviews(repo: str, pr_number: str, token: str) -> List[Dict[str, Any]]:
+    """
+    Get existing reviews for a PR.
+    
+    Args:
+        repo: Repository in the format 'owner/repo'
+        pr_number: Pull request number
+        token: GitHub token
+        
+    Returns:
+        List of existing review data
+    """
+    headers = {
+        "Accept": "application/vnd.github.v3+json",
+        "Authorization": f"Bearer {token}",
+        "X-GitHub-Api-Version": "2022-11-28"
+    }
+    
+    url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews"
+    
+    try:
+        logger.info(f"Fetching existing reviews for PR #{pr_number} in {repo}")
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()
+        reviews = response.json()
+        
+        # Filter only bot reviews (assuming bot uses the GitHub token which shows as GitHub Actions)
+        bot_reviews = [
+            review for review in reviews 
+            if review.get("user", {}).get("login", "") == "github-actions[bot]"
+        ]
+        
+        logger.info(f"Found {len(bot_reviews)} existing bot reviews")
+        return bot_reviews
+    except Exception as e:
+        logger.error(f"Error fetching existing reviews: {str(e)}")
+        return []
+
+
+def get_pr_diff(repo: str, pr_number: str, token: str) -> str:
+    """
+    Get the diff of a PR from GitHub.
+    
+    Args:
+        repo: Repository in the format 'owner/repo'
+        pr_number: Pull request number
+        token: GitHub token
+        
+    Returns:
+        The diff of the PR
+    """
+    headers = {
+        "Accept": "application/vnd.github.v3.diff",
+        "Authorization": f"Bearer {token}",  # Use "Bearer" instead of "token"
+        "User-Agent": "VisionPRAI"
+    }
+    url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}"
+    
+    logger.info(f"Fetching diff for PR #{pr_number} in {repo}")
+    logger.debug(f"GitHub API URL: {url}")
+    token_preview = f"{token[:4]}...{token[-4:]}" if len(token) > 8 else "***"
+    logger.debug(f"Using token (preview): {token_preview}")
+    
+    try:
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()
+        diff = response.text
+        
+        # Log response details
+        logger.debug(f"Response status code: {response.status_code}")
+        logger.debug(f"Response headers: {dict(response.headers)}")
+        
+        # Debug the retrieved diff
+        diff_size = len(diff)
+        diff_preview = diff[:500] + "..." if diff_size > 500 else diff
+        
+        if diff_size == 0:
+            logger.error("Retrieved empty diff from GitHub API")
+        else:
+            logger.info(f"Retrieved diff of size {diff_size} bytes")
+            logger.debug(f"Diff preview: {diff_preview}")
+            
+            # Count files in diff
+            file_count = diff.count("diff --git ")
+            logger.info(f"Detected {file_count} files in the diff")
+            
+        return diff
+    except Exception as e:
+        logger.error(f"Error getting PR diff: {str(e)}")
+        if isinstance(e, requests.exceptions.HTTPError) and hasattr(e, 'response'):
+            logger.error(f"Response status code: {e.response.status_code}")
+            logger.error(f"Response content: {e.response.text[:500]}")
+        return ""
+
+
+@with_context
+def get_pr_files_with_changes(repo: str, pr_number: str, token: str) -> List[Dict[str, Any]]:
+    """
+    Get the list of files that have been changed in the current push to a PR.
+    This is different from get_pr_files, which gets all files in the PR.
+    
+    For synchronize events, this helps identify which files were changed in this push.
+    
+    Args:
+        repo: Repository in the format 'owner/repo'
+        pr_number: Pull request number
+        token: GitHub token
+        
+    Returns:
+        List of files that have changes
+    """
+    headers = {
+        "Accept": "application/vnd.github.v3+json",
+        "Authorization": f"Bearer {token}",
+        "User-Agent": "VisionPRAI"
+    }
+    
+    # First, get the PR details to find the latest commit
+    pr_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}"
+    logger.info(f"Fetching PR details to get latest commits")
+    
+    try:
+        pr_response = requests.get(pr_url, headers=headers)
+        pr_response.raise_for_status()
+        pr_data = pr_response.json()
+        
+        # Extract the latest commit SHA
+        head_sha = pr_data.get("head", {}).get("sha")
+        if not head_sha:
+            logger.error("Failed to get latest commit SHA from PR data")
+            return []
+            
+        logger.info(f"Latest commit SHA for PR: {head_sha}")
+        
+        # Now get the files changed in this commit
+        commit_url = f"https://api.github.com/repos/{repo}/commits/{head_sha}"
+        logger.info(f"Fetching files changed in latest commit: {head_sha}")
+        
+        commit_response = requests.get(commit_url, headers=headers)
+        commit_response.raise_for_status()
+        commit_data = commit_response.json()
+        
+        files = commit_data.get("files", [])
+        logger.info(f"Found {len(files)} files changed in latest commit")
+        
+        return files
+    except Exception as e:
+        logger.error(f"Error getting files changed in latest commit: {str(e)}")
+        if isinstance(e, requests.exceptions.HTTPError) and hasattr(e, 'response'):
+            logger.error(f"Response status code: {e.response.status_code}")
+            logger.error(f"Response content: {e.response.text[:500]}")
+        return []
 
 
 @with_context
@@ -365,6 +669,45 @@ def review_pr(config_path: Optional[str] = None, verbose: bool = False) -> bool:
         # Get environment variables
         logger.info("Retrieving environment variables")
         github_token, repo, pr_number = get_environment_variables()
+        
+        # Check what kind of event triggered this run
+        event_name = os.environ.get("GITHUB_EVENT_NAME", "")
+        event_action = os.environ.get("GITHUB_ACTION", "")
+        
+        logger.info(f"Event name: {event_name}, Action: {event_action}")
+        
+        # For synchronize events, we only want to review what changed
+        is_synchronize_event = (event_name == "pull_request" and 
+                               event_action == "synchronize")
+        
+        if is_synchronize_event:
+            logger.info("This is a synchronize event (new push to PR)")
+        
+        # Verify token is working by checking rate limit
+        try:
+            headers = {
+                "Accept": "application/vnd.github.v3+json",
+                "Authorization": f"Bearer {github_token}",
+                "User-Agent": "VisionPRAI"
+            }
+            rate_limit_url = "https://api.github.com/rate_limit"
+            rate_limit_response = requests.get(rate_limit_url, headers=headers)
+            rate_limit_response.raise_for_status()
+            rate_limit_data = rate_limit_response.json()
+            
+            remaining = rate_limit_data.get("resources", {}).get("core", {}).get("remaining", "unknown")
+            reset_time = rate_limit_data.get("resources", {}).get("core", {}).get("reset", 0)
+            reset_datetime = datetime.fromtimestamp(reset_time).strftime("%Y-%m-%d %H:%M:%S") if reset_time else "unknown"
+            
+            logger.info(f"GitHub API rate limit: {remaining} remaining, resets at {reset_datetime}")
+        except Exception as e:
+            logger.warning(f"Failed to check GitHub API rate limit: {str(e)}")
+            # Continue anyway, as this is just a verification step
+        
+        # Check for existing reviews to determine our strategy
+        existing_reviews = get_existing_reviews(repo, pr_number, github_token)
+        is_first_review = len(existing_reviews) == 0
+        logger.info(f"Is this the first review of this PR? {is_first_review}")
         
         # Initialize model adapter
         provider = config['model']['provider']
@@ -396,6 +739,16 @@ def review_pr(config_path: Optional[str] = None, verbose: bool = False) -> bool:
     if not files:
         logger.warning("No files found. Continuing with diff only.")
         
+    # For synchronize events, try to get just the files that changed in this push
+    if is_synchronize_event and files:
+        changed_files = get_pr_files_with_changes(repo, pr_number, github_token)
+        
+        if changed_files:
+            logger.info(f"Found {len(changed_files)} files changed in this push")
+            # Replace the full files list with just the changed files
+            files = changed_files
+            logger.info("Will only review files changed in this push")
+    
     # Apply file filtering if files were found
     if files:
         logger.info("Applying file filtering rules")
@@ -430,8 +783,8 @@ def review_pr(config_path: Optional[str] = None, verbose: bool = False) -> bool:
         logger.error(f"Error generating review: {str(e)}")
         return False
     
-    # Post summary overview as general comment
-    logger.info("Posting overview comment")
+    # Prepare summary overview
+    logger.info("Preparing overview comment")
     
     # Extract just summary and overview sections
     summary_pattern = r'(?:^|\n)## Summary\s*\n(.*?)(?=\n##|\Z)'
@@ -446,48 +799,43 @@ def review_pr(config_path: Optional[str] = None, verbose: bool = False) -> bool:
     logger.debug(f"Review text received (first 1000 chars): {review_text[:1000]}...")
     logger.debug(f"Review text received (last 1000 chars): {review_text[-1000:]}...")
     
-    overview_text = "# AI Review Summary\n\n"
-    
-    if summary_match:
-        overview_text += f"## Summary\n{summary_match.group(1).strip()}\n\n"
-        logger.debug("Summary section found and extracted")
+    # Construct the overview text differently based on whether this is the first review
+    if is_first_review:
+        overview_text = "# AI Review Summary\n\n"
+        
+        if summary_match:
+            overview_text += f"## Summary\n{summary_match.group(1).strip()}\n\n"
+            logger.debug("Summary section found and extracted")
+        else:
+            logger.warning("No summary section found in the review text")
+            # Add a fallback summary if none was found
+            overview_text += "## Summary\nThis PR contains code changes that have been reviewed by the AI.\n\n"
+        
+        if overview_match:
+            overview_text += f"## Overview of Changes\n{overview_match.group(1).strip()}\n\n"
+            logger.debug("Overview section found and extracted")
+        else:
+            logger.warning("No overview section found in the review text")
+            # Add a fallback overview if none was found
+            overview_text += "## Overview of Changes\n- Code changes were analyzed\n- See detailed comments for specific feedback\n\n"
+        
+        if recommendations_match:
+            overview_text += f"## Recommendations\n{recommendations_match.group(1).strip()}\n\n"
+            logger.debug("Recommendations section found and extracted")
     else:
-        logger.warning("No summary section found in the review text")
-        # Add a fallback summary if none was found
-        overview_text += "## Summary\nThis PR contains code changes that have been reviewed by the AI.\n\n"
-    
-    if overview_match:
-        overview_text += f"## Overview of Changes\n{overview_match.group(1).strip()}\n\n"
-        logger.debug("Overview section found and extracted")
-    else:
-        logger.warning("No overview section found in the review text")
-        # Add a fallback overview if none was found
-        overview_text += "## Overview of Changes\n- Code changes were analyzed\n- See detailed comments for specific feedback\n\n"
-    
-    if recommendations_match:
-        overview_text += f"## Recommendations\n{recommendations_match.group(1).strip()}\n\n"
-        logger.debug("Recommendations section found and extracted")
+        # For subsequent reviews, create a more focused update message
+        overview_text = f"# AI Review Update\n\n"
+        
+        if summary_match:
+            overview_text += f"## Summary of Changes\n{summary_match.group(1).strip()}\n\n"
+        else:
+            overview_text += "## Summary of Changes\nI've reviewed the latest changes in this PR.\n\n"
+            
+        if recommendations_match:
+            overview_text += f"## New Recommendations\n{recommendations_match.group(1).strip()}\n\n"
     
     # Add a note about code-specific comments
     overview_text += "\n\n> Detailed feedback has been added as review comments on specific code lines."
-    
-    # Try to post the overview comment
-    try:
-        logger.info("Attempting to post overview comment")
-        overview_success = post_review_comment(repo, pr_number, github_token, overview_text)
-        if not overview_success:
-            logger.error("Failed to post overview comment - API call returned False")
-            # Try an alternative approach - post a simpler comment
-            simple_overview = "# AI Review\n\nThe AI has reviewed this PR. See the detailed comments for feedback."
-            logger.info("Attempting to post simplified overview comment")
-            simple_success = post_review_comment(repo, pr_number, github_token, simple_overview)
-            if not simple_success:
-                logger.error("Failed to post simplified overview comment")
-        else:
-            logger.info("Successfully posted overview comment")
-    except Exception as e:
-        logger.error(f"Exception while posting overview comment: {str(e)}", exc_info=True)
-        # Continue anyway to try posting line comments
     
     # Check if we should post line-specific comments
     line_comments_enabled = config.get("review", {}).get("line_comments", True)
@@ -496,177 +844,54 @@ def review_pr(config_path: Optional[str] = None, verbose: bool = False) -> bool:
             logger.info("Processing line-specific comments", 
                        context={"repo": repo, "pr_number": pr_number})
             
-            # Parse the diff to get file/line mapping
-            file_line_map = parse_diff_for_lines(diff)
+            # Parse the diff to map line numbers to positions
+            logger.info("Parsing diff to map line numbers to positions in the diff")
+            file_line_positions = parse_diff_for_lines(diff)
             
-            # First use the standard extractor for explicitly marked line comments
-            comment_extractor = CommentExtractor(config_path=config_path or "config.yaml")
-            standard_line_comments = comment_extractor.extract_line_comments(review_text, file_line_map)
-            logger.debug(f"Extracted {len(standard_line_comments)} standard line comments")
-            
-            # Now extract file-specific sections and convert them to line comments for each file
-            file_sections = {}
-            
-            # Look for comments in both the main review and the Detailed Feedback section
-            detailed_feedback_pattern = r'(?:^|\n)## Detailed Feedback\s*\n(.*?)(?=\n##|\Z)'
-            detailed_feedback_match = re.search(detailed_feedback_pattern, review_text, re.DOTALL)
-            
-            # If we found a Detailed Feedback section, extract comments from there
-            detailed_feedback_text = ""
-            if detailed_feedback_match:
-                detailed_feedback_text = detailed_feedback_match.group(1).strip()
-                logger.debug("Detailed Feedback section found")
+            if not file_line_positions:
+                logger.warning("Could not parse any line positions from diff. Review comments may not appear on specific lines.")
             else:
-                # If no Detailed Feedback section, use the whole review text
-                detailed_feedback_text = review_text
-                logger.warning("No Detailed Feedback section found, using entire review text")
+                logger.info(f"Successfully parsed positions for {len(file_line_positions)} files")
+            
+            # Extract comments from the review
+            logger.info("Extracting comments from AI review")
+            comment_extractor = CommentExtractor()
+            valid_comments = comment_extractor.extract_comments(review_text, file_line_positions)
+            
+            logger.info(f"Extracted {len(valid_comments)} valid comments from review")
+            
+            if valid_comments:
+                # Log statistics about comments per file
+                comments_by_file = {}
+                for comment in valid_comments:
+                    file_path = comment.get("path", "unknown")
+                    if file_path not in comments_by_file:
+                        comments_by_file[file_path] = []
+                    comments_by_file[file_path].append(comment)
                 
-            # Also check for a File-Specific Comments section
-            file_comments_pattern = r'(?:^|\n)## File-Specific Comments\s*\n(.*?)(?=\n##|\Z)'
-            file_comments_match = re.search(file_comments_pattern, review_text, re.DOTALL)
-            
-            if file_comments_match:
-                file_comments_text = file_comments_match.group(1).strip()
-                logger.debug("File-Specific Comments section found")
-                # Append to detailed feedback text
-                detailed_feedback_text += "\n\n" + file_comments_text
-            
-            # Extract file-specific comments
-            file_section_pattern = r'(?:^|\n)### ([^\n:]+):(\d+)\s*\n(.*?)(?=\n### [^\n:]+:\d+|\Z)'
-            
-            file_section_matches = list(re.finditer(file_section_pattern, detailed_feedback_text, re.DOTALL))
-            logger.debug(f"Found {len(file_section_matches)} file section matches")
-            
-            # Log the detailed feedback text for debugging
-            logger.debug(f"Detailed feedback text (first 1000 chars): {detailed_feedback_text[:1000]}")
-            
-            # If no file section matches were found, try a more lenient pattern
-            if not file_section_matches:
-                logger.warning("No file section matches found with primary pattern, trying alternative pattern")
-                alt_file_section_pattern = r'(?:^|\n)(?:In|File|At) ([^\n:,]+)[,:]? (?:line|at line) (\d+)[:]?\s*\n(.*?)(?=\n(?:In|File|At) [^\n:,]+[,:]? (?:line|at line) \d+[:]?|\Z)'
-                file_section_matches = list(re.finditer(alt_file_section_pattern, detailed_feedback_text, re.DOTALL))
-                logger.debug(f"Found {len(file_section_matches)} file section matches with alternative pattern")
-            
-            for match in file_section_matches:
-                filename = match.group(1).strip()
-                line_number = int(match.group(2))
-                content = match.group(3).strip()
+                logger.info(f"Comment distribution across {len(comments_by_file)} files:")
+                for file_path, comments in comments_by_file.items():
+                    logger.info(f"  - {file_path}: {len(comments)} comments")
                 
-                logger.debug(f"Processing file section match: {filename}:{line_number}")
-                logger.debug(f"Content preview: {content[:100]}...")
-                
-                if filename in file_line_map:
-                    # Find the matching position for this line number
-                    matching_lines = [
-                        (line_num, pos, line_content) 
-                        for line_num, pos, line_content in file_line_map[filename] 
-                        if line_num == line_number
-                    ]
-                    if matching_lines:
-                        # Use the first matching position
-                        _, position, _ = matching_lines[0]
-                        file_sections[f"{filename}:{line_number}"] = {
-                            "path": filename,
-                            "line": line_number,
-                            "position": position,  # Store position separately from line number
-                            "body": content
-                        }
-                        logger.debug(f"Added file section for {filename}:{line_number} at position {position}")
-                    else:
-                        logger.warning(f"No matching position found for {filename}:{line_number}")
-                        # Try to find the closest line number as a fallback
-                        if file_line_map[filename]:
-                            closest_line = min(file_line_map[filename], key=lambda x: abs(x[0] - line_number))
-                            closest_line_num, closest_pos, _ = closest_line
-                            logger.info(f"Using closest line {closest_line_num} at position {closest_pos} as fallback")
-                            file_sections[f"{filename}:{closest_line_num}"] = {
-                                "path": filename,
-                                "line": closest_line_num,
-                                "position": closest_pos,
-                                "body": f"[Originally for line {line_number}] {content}"
-                            }
-                else:
-                    logger.warning(f"File {filename} not found in file_line_map")
-                    # Try to find a similar filename as a fallback
-                    similar_files = [f for f in file_line_map.keys() if filename in f or f in filename]
-                    if similar_files:
-                        similar_file = similar_files[0]
-                        logger.info(f"Using similar file {similar_file} as fallback")
-                        # Use the first line of the similar file
-                        if file_line_map[similar_file]:
-                            first_line = file_line_map[similar_file][0]
-                            line_num, pos, _ = first_line
-                            file_sections[f"{similar_file}:{line_num}"] = {
-                                "path": similar_file,
-                                "line": line_num,
-                                "position": pos,
-                                "body": f"[Originally for {filename}:{line_number}] {content}"
-                            }
-            
-            # Convert file sections to line comments 
-            additional_comments = list(file_sections.values())
-            logger.debug(f"Added {len(additional_comments)} additional comments from file sections")
-            
-            # Combine standard and file-section comments
-            all_comments = standard_line_comments + additional_comments
-            
-            # Post line comments if any were found
-            if all_comments:
-                logger.info(f"Posting {len(all_comments)} line-specific comments",
-                           context={"comments_count": len(all_comments)})
+                # Post line comments
                 try:
-                    # Ensure all comments have the required fields for the GitHub API
-                    for comment in all_comments:
-                        # GitHub requires these fields: path, body, line, side
-                        if "path" not in comment or "body" not in comment:
-                            logger.error(f"Comment missing required fields: {comment}")
-                            continue
-                            
-                        # Ensure line is an integer
-                        if "line" in comment:
-                            comment["line"] = int(comment["line"])
-                        else:
-                            logger.warning(f"Comment missing line number for {comment.get('path', 'unknown file')}")
-                            comment["line"] = 1  # Default to line 1 if no line specified
-                        
-                        # Ensure side is always RIGHT (for new version)
-                        comment["side"] = "RIGHT"
-                        
-                        # For multi-line comments, ensure start_side is set if start_line is present
-                        if "start_line" in comment:
-                            comment["start_line"] = int(comment["start_line"]) 
-                            comment["start_side"] = "RIGHT"
+                    logger.info("Posting line comments with overview text (draft review approach)")
+                    line_comment_success = post_line_comments(
+                        repo, 
+                        pr_number, 
+                        github_token, 
+                        valid_comments,
+                        overview_text=review_text  # Pass the review text as the overview
+                    )
                     
-                    # Remove any comments that don't have the required fields
-                    valid_comments = [c for c in all_comments if "path" in c and "body" in c and "line" in c and "side" in c]
-                    
-                    if len(valid_comments) < len(all_comments):
-                        logger.warning(f"Filtered out {len(all_comments) - len(valid_comments)} invalid comments")
-                    
-                    # Log sample comments for debugging
-                    if valid_comments:
-                        sample = valid_comments[0]
-                        logger.debug(f"Sample comment: path={sample['path']}, line={sample['line']}, side={sample['side']}")
-                        
-                        # Log number of comments per file
-                        file_counts = {}
-                        for c in valid_comments:
-                            file_counts[c["path"]] = file_counts.get(c["path"], 0) + 1
-                        logger.debug(f"Comments by file: {file_counts}")
-                    
-                    # Post the comments
-                    if valid_comments:
-                        line_comment_success = post_line_comments(repo, pr_number, github_token, valid_comments)
-                        if not line_comment_success:
-                            logger.error("Failed to post line comments - API call returned False",
-                                        context={"repo": repo, "pr_number": pr_number})
+                    if line_comment_success:
+                        logger.info("Successfully posted line comments")
                     else:
-                        logger.warning("No valid comments to post")
+                        logger.error("Failed to post line comments")
                 except Exception as e:
-                    logger.error(f"Exception while posting line comments: {str(e)}", exc_info=True)
+                    logger.error(f"Error posting line comments: {str(e)}", exc_info=True)
             else:
-                logger.info("No line-specific comments found in the review",
-                           context={"repo": repo, "pr_number": pr_number})
+                logger.warning("No valid comments extracted from review")
         except CommentExtractionError as e:
             logger.error(f"Error extracting line comments: {str(e)}",
                         context={"error_code": e.error_code, "repo": repo, "pr_number": pr_number},
@@ -689,7 +914,25 @@ def main():
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose logging")
     args = parser.parse_args()
     
+    logger.info("=========================================================")
+    logger.info("Starting AI PR Review - Triggered by workflow")
+    if "GITHUB_EVENT_NAME" in os.environ:
+        logger.info(f"Triggered by GitHub event: {os.environ.get('GITHUB_EVENT_NAME')}")
+    if "GITHUB_EVENT_ACTION" in os.environ:
+        logger.info(f"Event action: {os.environ.get('GITHUB_EVENT_ACTION')}")
+    logger.info("=========================================================")
+    
     success = review_pr(config_path=args.config, verbose=args.verbose)
+    
+    if success:
+        logger.info("=========================================================")
+        logger.info("AI PR Review completed successfully")
+        logger.info("=========================================================")
+    else:
+        logger.error("=========================================================")
+        logger.error("AI PR Review failed")
+        logger.error("=========================================================")
+    
     sys.exit(0 if success else 1)
 
 

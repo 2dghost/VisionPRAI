@@ -133,6 +133,16 @@ class CommentExtractionError(ContentProcessingError):
         super().__init__(f"Failed to extract comments: {reason}", error_code)
 
 
+class LanguageDetectionError(ContentProcessingError):
+    """Error raised when language detection or pattern matching fails."""
+    
+    def __init__(self, reason: str, file_path: Optional[str] = None, error_code: int = 4004):
+        message = f"Language detection error: {reason}"
+        if file_path:
+            message += f" (file: {file_path})"
+        super().__init__(message, error_code)
+
+
 # Resource Errors (5000-5999)
 class ResourceError(VisionPRAIError):
     """Base class for resource related errors."""

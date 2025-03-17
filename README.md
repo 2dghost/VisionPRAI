@@ -15,6 +15,7 @@ AI PR Reviewer brings AI code reviews to GitHub with the freedom to choose your 
 
 - **🤖 Choose Your AI**: Works with OpenAI, Anthropic Claude, Google Gemini, Mistral, etc.
 - **💬 In-Line Code Comments**: AI feedback appears directly alongside your code
+- **🔍 File-Specific Comments**: Intelligent extraction of comments for specific files and lines
 - **🔒 Privacy Focused**: Your code never leaves your GitHub Actions environment
 - **⚙️ Highly Customizable**: Configure focus areas, file filters, and model behavior
 - **🚀 5-Minute Setup**: Just add the workflow file and your API key to get started
@@ -222,10 +223,17 @@ file_filtering:
 
 ### Line-Specific Code Comments
 
-The AI also adds detailed comments directly on specific lines of code:
+The AI adds detailed comments directly on specific lines of code:
 
 ![image](https://github.com/user-attachments/assets/6709d4f6-86a0-497f-a5ae-8534eb4f37ca)
 
+### File-Specific Comments
+
+The reviewer intelligently extracts comments for specific files and lines, even when they're mentioned in different formats:
+
+- Comments marked with explicit file paths and line numbers
+- Comments in "File-Specific Comments" sections
+- Comments in "Detailed Feedback" sections
 
 ## Environment Variables
 
@@ -238,6 +246,14 @@ The AI also adds detailed comments directly on specific lines of code:
 - `PR_REPOSITORY`: Repository in the format "owner/repo" (for local runs)
 - `PR_NUMBER`: Pull request number (for local runs)
 
+## API Key Handling
+
+The reviewer includes robust API key handling:
+- Automatically strips whitespace and newlines from API keys
+- Prioritizes environment variables over config values
+- Provides detailed logging for troubleshooting authentication issues
+- Supports multiple authentication header formats for different API versions
+
 ## Contributing
 
 We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for more information.
@@ -245,4 +261,42 @@ We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) f
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## Enhanced Security & Error Handling Detection
+
+The PR Reviewer includes advanced detection capabilities for critical security issues and error handling problems:
+
+#### Security Detection
+
+The system can identify a wide range of security vulnerabilities:
+
+- **SQL Injection**: Detects string concatenation in SQL queries (`f"SELECT * FROM users WHERE id = {user_id}"`)
+- **Path Traversal**: Identifies unsanitized file paths that could lead to unauthorized access
+- **Command Injection**: Flags shell commands with user input (`os.system(f"ping {host}")`)
+- **Hardcoded Secrets**: Detects API keys, passwords, and credentials in code
+- **XSS Vulnerabilities**: Identifies unescaped user input in web contexts
+- **Insecure Authentication**: Spots weak token validation and password handling
+
+#### Error Handling Improvements 
+
+The system also detects common error handling problems:
+
+- **Missing Exception Handling**: Operations without proper try/except blocks
+- **Overly Broad Exceptions**: Catching `Exception` without specific handling
+- **Swallowed Exceptions**: Empty except blocks that hide important errors
+- **Resource Management**: Missing context managers for files, connections, etc.
+- **API Error Handling**: Unhandled errors from external API calls
+
+#### Testing Security Detection
+
+You can verify the security detection capabilities using the dedicated test script:
+
+```bash
+# Set up test environment variables
+export TEST_REPO="owner/repo"
+export TEST_PR_NUMBER="123"
+
+# Run security and error handling focused tests
+python src/testing/run_security_tests.py
+```
 
