@@ -22,9 +22,31 @@ class ModelAdapter:
                    (provider, api_key, endpoint, model, etc.)
         """
         self.provider = config["provider"].lower()
-        api_key = config.get("api_key") or os.environ.get(f"{self.provider.upper()}_API_KEY")
+        logger = logging.getLogger("ai-pr-reviewer")
+        logger.info(f"Initializing model adapter for provider: {self.provider}")
+        
+        # Special handling for Anthropic to prioritize the environment variable
+        if self.provider == "anthropic":
+            api_key = os.environ.get("ANTHROPIC_API_KEY") or config.get("api_key")
+            if os.environ.get("ANTHROPIC_API_KEY"):
+                logger.info("Using ANTHROPIC_API_KEY from environment variables")
+            else:
+                logger.info("ANTHROPIC_API_KEY not found in environment, using config value")
+        else:
+            api_key = config.get("api_key") or os.environ.get(f"{self.provider.upper()}_API_KEY")
+            
         # Ensure API key is trimmed of any whitespace
         self.api_key = api_key.strip() if api_key else None
+        
+        # Log API key presence (not the actual key)
+        if self.api_key:
+            logger.info(f"API key for {self.provider} is present")
+            # Log the first few characters of the key for debugging (safely)
+            if len(self.api_key) > 8:
+                logger.debug(f"API key starts with: {self.api_key[:4]}...{self.api_key[-4:]}")
+        else:
+            logger.error(f"API key for {self.provider} is missing")
+            
         self.endpoint = config["endpoint"]
         self.model = config["model"]
         self.max_tokens = config.get("max_tokens", 1500)
@@ -98,17 +120,23 @@ class ModelAdapter:
 
     def _call_anthropic(self, prompt: str) -> str:
         """Call Anthropic Claude API."""
+        # Get the API key from environment variable directly to ensure it's correct
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            api_key = self.api_key
+            
+        logger = logging.getLogger("ai-pr-reviewer")
+        logger.debug(f"Using API key from {'environment variable' if api_key != self.api_key else 'config'}")
+        
+        # Use the correct authentication header for Anthropic API
         headers = {
-            "x-api-key": self.api_key,
+            "x-api-key": api_key,
             "Content-Type": "application/json",
             "anthropic-version": "2023-06-01"
         }
         
         # Try with the newer Anthropic API format
         try:
-            # First try with the latest API version
-            headers["anthropic-version"] = "2023-01-01"
-            
             # Updated payload format for Anthropic Claude API
             payload = {
                 "model": self.model,
@@ -121,7 +149,6 @@ class ModelAdapter:
             
             # If we get a 404 error, try with the latest model
             if response.status_code == 404:
-                logger = logging.getLogger("ai-pr-reviewer")
                 logger.warning(f"Model {self.model} not found, trying with claude-3-opus-latest")
                 payload["model"] = "claude-3-opus-latest"
                 response = requests.post(self.endpoint, json=payload, headers=headers)
@@ -129,22 +156,24 @@ class ModelAdapter:
             if response.status_code != 200:
                 # Try with updated headers for newer API
                 headers = {
-                    "anthropic-api-key": self.api_key,
+                    "anthropic-api-key": api_key,
                     "Content-Type": "application/json",
                     "anthropic-version": "2023-06-01"
                 }
                 response = requests.post(self.endpoint, json=payload, headers=headers)
                 
                 if response.status_code != 200:
-                    # Try with x-api-key but in Authorization header
+                    # Try with Authorization header
                     headers = {
-                        "Authorization": f"Bearer {self.api_key}",
+                        "Authorization": f"Bearer {api_key}",
                         "Content-Type": "application/json",
                         "anthropic-version": "2023-06-01"
                     }
                     response = requests.post(self.endpoint, json=payload, headers=headers)
                     
                     if response.status_code != 200:
+                        # Log the error for debugging
+                        logger.error(f"Anthropic API error: {response.status_code} - {response.text}")
                         raise RuntimeError(f"Anthropic API error: {response.status_code} - {response.text}")
         except Exception as e:
             raise RuntimeError(f"Anthropic API error: {str(e)}")
