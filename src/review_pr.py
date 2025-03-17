@@ -617,64 +617,51 @@ def review_pr(config_path: Optional[str] = None, verbose: bool = False) -> bool:
                 try:
                     # Ensure all comments have the required fields for the GitHub API
                     for comment in all_comments:
-                        # Make sure line is an integer
+                        # GitHub requires these fields: path, body, line, side
+                        if "path" not in comment or "body" not in comment:
+                            logger.error(f"Comment missing required fields: {comment}")
+                            continue
+                            
+                        # Ensure line is an integer
                         if "line" in comment:
                             comment["line"] = int(comment["line"])
                         else:
-                            # Every comment must have a line number for the GitHub API
                             logger.warning(f"Comment missing line number for {comment.get('path', 'unknown file')}")
-                            # If we have a position but no line, try to convert position to line
-                            if "position" in comment and "path" in comment:
-                                for line, pos, _ in file_line_map.get(comment["path"], []):
-                                    if pos == comment["position"]:
-                                        comment["line"] = line
-                                        logger.info(f"Converted position {pos} to line {line} for {comment['path']}")
-                                        break
-                                
-                                # If we still don't have a line number, use a default
-                                if "line" not in comment:
-                                    logger.warning(f"Unable to map position to line, using default line 1")
-                                    comment["line"] = 1
-                            else:
-                                comment["line"] = 1  # Default to line 1 if no line or position
-                                logger.warning(f"Missing line and position, defaulting to line 1")
+                            comment["line"] = 1  # Default to line 1 if no line specified
                         
-                        # Ensure we have a side parameter for line comments
-                        if "side" not in comment:
-                            comment["side"] = "RIGHT"
-                            
+                        # Ensure side is always RIGHT (for new version)
+                        comment["side"] = "RIGHT"
+                        
                         # For multi-line comments, ensure start_side is set if start_line is present
-                        if "start_line" in comment and "start_side" not in comment:
+                        if "start_line" in comment:
+                            comment["start_line"] = int(comment["start_line"]) 
                             comment["start_side"] = "RIGHT"
                     
-                    # Log some sample comments for debugging
-                    if all_comments:
-                        sample_comment = all_comments[0]
-                        logger.debug(f"Sample comment: {sample_comment['path']}:{sample_comment.get('line', 'unknown')} - {sample_comment.get('side', 'unknown side')}")
+                    # Remove any comments that don't have the required fields
+                    valid_comments = [c for c in all_comments if "path" in c and "body" in c and "line" in c and "side" in c]
                     
-                    line_comment_success = post_line_comments(repo, pr_number, github_token, all_comments)
-                    if not line_comment_success:
-                        logger.error("Failed to post line comments - API call returned False",
-                                    context={"repo": repo, "pr_number": pr_number})
-                        # Try posting comments one by one as a fallback
-                        logger.info("Attempting to post comments one by one")
-                        for i, comment in enumerate(all_comments):
-                            try:
-                                # Ensure each individual comment has required fields
-                                if "line" not in comment:
-                                    comment["line"] = 1
-                                if "side" not in comment:
-                                    comment["side"] = "RIGHT"
-                                
-                                single_success = post_line_comments(repo, pr_number, github_token, [comment])
-                                if single_success:
-                                    logger.info(f"Successfully posted comment {i+1}/{len(all_comments)}")
-                                else:
-                                    logger.error(f"Failed to post comment {i+1}/{len(all_comments)}")
-                                # Add a delay to avoid rate limits
-                                time.sleep(2)
-                            except Exception as e:
-                                logger.error(f"Error posting comment {i+1}: {str(e)}")
+                    if len(valid_comments) < len(all_comments):
+                        logger.warning(f"Filtered out {len(all_comments) - len(valid_comments)} invalid comments")
+                    
+                    # Log sample comments for debugging
+                    if valid_comments:
+                        sample = valid_comments[0]
+                        logger.debug(f"Sample comment: path={sample['path']}, line={sample['line']}, side={sample['side']}")
+                        
+                        # Log number of comments per file
+                        file_counts = {}
+                        for c in valid_comments:
+                            file_counts[c["path"]] = file_counts.get(c["path"], 0) + 1
+                        logger.debug(f"Comments by file: {file_counts}")
+                    
+                    # Post the comments
+                    if valid_comments:
+                        line_comment_success = post_line_comments(repo, pr_number, github_token, valid_comments)
+                        if not line_comment_success:
+                            logger.error("Failed to post line comments - API call returned False",
+                                        context={"repo": repo, "pr_number": pr_number})
+                    else:
+                        logger.warning("No valid comments to post")
                 except Exception as e:
                     logger.error(f"Exception while posting line comments: {str(e)}", exc_info=True)
             else:

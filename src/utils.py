@@ -348,33 +348,11 @@ def post_line_comments(
         
     headers = {
         "Accept": "application/vnd.github.v3+json",
-        "Authorization": f"Bearer {token}"
+        "Authorization": f"Bearer {token}",
+        "X-GitHub-Api-Version": "2022-11-28"  # Use explicit API version
     }
     
-    # First create a pending review - this is required for posting comments
-    create_review_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews"
-    
-    try:
-        # Create an empty pending review first
-        logger.info(f"Creating pending review for PR #{pr_number} in {repo}")
-        pending_data = {
-            "event": "PENDING",  # Creates a pending review that we can add comments to
-            "body": "AI PR review in progress..."
-        }
-        pending_response = requests.post(create_review_url, headers=headers, json=pending_data)
-        pending_response.raise_for_status()
-        review_id = pending_response.json().get("id")
-        
-        if not review_id:
-            logger.error("Failed to get review ID from pending review response")
-            return False
-            
-        logger.debug(f"Created pending review with ID: {review_id}")
-    except Exception as e:
-        logger.error(f"Failed to create pending review: {str(e)}")
-        return False
-    
-    # Get the latest commit SHA for the PR
+    # Get the latest commit SHA for the PR - required for review comments
     try:
         commits_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/commits"
         commits_response = requests.get(commits_url, headers=headers)
@@ -391,100 +369,149 @@ def post_line_comments(
     
     # Format comments for the API
     formatted_comments = []
-    for i, comment in enumerate(comments):
-        # Extract suggestion if present
-        body = comment["body"]
-        suggestion_pattern = r"```suggestion\n(.*?)```"
-        suggestion_match = re.search(suggestion_pattern, body, re.DOTALL)
-        
-        # Log the comment details for debugging
-        logger.debug(f"Comment {i+1}/{len(comments)}: {comment['path']}:{comment.get('line', 'unknown')}")
-        
+    for comment in comments:
         formatted_comment = {
             "path": comment["path"],
-            "body": body,
-            "line": int(comment.get("line", 1)),  # Ensure line is an integer
-            "side": "RIGHT"  # Comment on the new version of the file
+            "body": comment["body"],
+            "line": int(comment.get("line", 1)),
+            "side": comment.get("side", "RIGHT")
         }
         
-        # For multi-line comments, add start_line and start_side if available
+        # For multi-line comments, add start_line and start_side
         if "start_line" in comment:
             formatted_comment["start_line"] = int(comment["start_line"])
             formatted_comment["start_side"] = comment.get("start_side", "RIGHT")
-            
-        # Only use position as a fallback for older API compatibility
-        if "position" in comment and "line" not in comment:
-            formatted_comment["position"] = comment["position"]
-            # Remove line and side if using position
-            if "line" in formatted_comment:
-                del formatted_comment["line"]
-            if "side" in formatted_comment:
-                del formatted_comment["side"]
-            logger.debug(f"Using position {comment['position']} for comment on {comment['path']}")
-        else:
-            logger.debug(f"Using line {formatted_comment['line']} with side RIGHT for comment on {comment['path']}")
         
         formatted_comments.append(formatted_comment)
     
-    # Add comments to the pending review
-    comments_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews/{review_id}/comments"
-    
+    # Create a review with comments in a single request
+    # This is the recommended way according to GitHub API docs
     try:
-        logger.info(f"Adding {len(comments)} comments to review #{review_id}")
+        review_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews"
         
-        # Add each comment to the review
-        comment_success = True
-        for i, comment in enumerate(formatted_comments):
-            try:
-                comment_response = requests.post(comments_url, headers=headers, json=comment)
-                if comment_response.status_code >= 400:
-                    logger.error(f"Failed to add comment {i+1}: {comment_response.text}")
-                    comment_success = False
-                else:
-                    logger.debug(f"Successfully added comment {i+1}/{len(formatted_comments)}")
-                
-                # Add small delay between requests to avoid rate limits
-                if i < len(formatted_comments) - 1:  # No need to delay after the last comment
-                    time.sleep(0.5)
-            except Exception as e:
-                logger.error(f"Error adding comment {i+1}: {str(e)}")
-                comment_success = False
+        review_data = {
+            "commit_id": latest_commit_sha,
+            "event": "COMMENT",  # Submit the review immediately as a COMMENT
+            "body": f"AI PR Review - I've reviewed the changes and left {len(comments)} specific comments on the code.",
+            "comments": formatted_comments
+        }
         
-        if not comment_success:
-            logger.warning("Some comments could not be added to the review")
+        logger.info(f"Creating review with {len(formatted_comments)} comments")
+        logger.debug(f"Review data: commit_id={latest_commit_sha}, event=COMMENT, comments_count={len(formatted_comments)}")
+        
+        # Log a sample comment for debugging
+        if formatted_comments:
+            sample = formatted_comments[0]
+            logger.debug(f"Sample comment: path={sample['path']}, line={sample['line']}, side={sample['side']}")
+            
+        review_response = requests.post(review_url, headers=headers, json=review_data)
+        
+        # Check if the request was successful
+        if review_response.status_code >= 400:
+            error_body = review_response.text
+            logger.error(f"Failed to create review: HTTP {review_response.status_code}: {error_body}")
+            
+            # Try individual comments if bulk creation failed
+            logger.info("Attempting to create review with comments one by one")
+            return create_review_with_individual_comments(repo, pr_number, token, formatted_comments, latest_commit_sha)
+        
+        # Success!
+        review_id = review_response.json().get("id")
+        logger.info(f"Successfully created review #{review_id} with {len(formatted_comments)} comments")
+        return True
+            
     except Exception as e:
-        logger.error(f"Failed to add comments to review: {str(e)}")
+        logger.error(f"Error creating review: {str(e)}", exc_info=True)
+        return False
+
+
+def create_review_with_individual_comments(repo, pr_number, token, comments, commit_sha):
+    """Helper function to create a review and add comments one by one."""
+    headers = {
+        "Accept": "application/vnd.github.v3+json",
+        "Authorization": f"Bearer {token}",
+        "X-GitHub-Api-Version": "2022-11-28"
+    }
+    
+    # First create a pending review
+    try:
+        review_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews"
+        
+        pending_data = {
+            "commit_id": commit_sha,
+            "event": "PENDING",
+            "body": "AI PR review in progress..."
+        }
+        
+        pending_response = requests.post(review_url, headers=headers, json=pending_data)
+        pending_response.raise_for_status()
+        
+        review_id = pending_response.json().get("id")
+        if not review_id:
+            logger.error("Failed to get review ID from pending review response")
+            return False
+            
+        logger.debug(f"Created pending review with ID: {review_id}")
+    except Exception as e:
+        logger.error(f"Failed to create pending review: {str(e)}")
         return False
     
+    # Add comments one by one
+    comments_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews/{review_id}/comments"
+    
+    success = True
+    for i, comment in enumerate(comments):
+        try:
+            # Each comment needs the commit_id
+            comment_data = {
+                "path": comment["path"],
+                "body": comment["body"],
+                "line": comment["line"],
+                "side": comment["side"]
+            }
+            
+            # Add optional fields if present
+            if "start_line" in comment:
+                comment_data["start_line"] = comment["start_line"]
+                comment_data["start_side"] = comment.get("start_side", "RIGHT")
+            
+            logger.debug(f"Adding comment {i+1}/{len(comments)}: {comment['path']}:{comment['line']}")
+            
+            comment_response = requests.post(comments_url, headers=headers, json=comment_data)
+            
+            if comment_response.status_code >= 400:
+                logger.error(f"Failed to add comment {i+1}: HTTP {comment_response.status_code}: {comment_response.text}")
+                success = False
+            else:
+                logger.debug(f"Successfully added comment {i+1}/{len(comments)}")
+                
+            # Add a delay to avoid rate limits
+            time.sleep(0.5)
+        except Exception as e:
+            logger.error(f"Error adding comment {i+1}: {str(e)}")
+            success = False
+    
     # Submit the review to publish the comments
-    submit_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews/{review_id}/events"
-    
-    # Create a summary of the review
-    review_body = "AI PR Review - Line Comments\n\n"
-    review_body += f"I've reviewed the changes and left {len(comments)} specific comments on the code."
-    
-    # Submit the final review
     try:
-        logger.info(f"Submitting review #{review_id} with {len(comments)} comments")
+        submit_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews/{review_id}/events"
         
         submit_data = {
-            "body": review_body,
-            "event": "COMMENT"  # Can be APPROVE, REQUEST_CHANGES, or COMMENT
+            "body": f"AI PR Review - I've reviewed the changes and left {len(comments)} specific comments on the code.",
+            "event": "COMMENT"
         }
+        
+        logger.info(f"Submitting review #{review_id}")
         
         submit_response = requests.post(submit_url, headers=headers, json=submit_data)
         
-        # Log response details for debugging
-        logger.debug(f"GitHub API response status: {submit_response.status_code}")
         if submit_response.status_code >= 400:
-            logger.error(f"Failed to submit review: {submit_response.text}")
+            logger.error(f"Failed to submit review: HTTP {submit_response.status_code}: {submit_response.text}")
             return False
             
         logger.info(f"Successfully submitted review with {len(comments)} comments")
-        return True
-            
-    except requests.RequestException as e:
-        logger.error(f"Failed to submit review: {e}")
+        return success
+    except Exception as e:
+        logger.error(f"Failed to submit review: {str(e)}")
         return False
 
 
@@ -498,96 +525,66 @@ def parse_diff_for_lines(diff_text: str) -> Dict[str, List[Tuple[int, int, str]]
         
     Returns:
         Dictionary mapping file paths to list of (line_number, position, line_content) tuples
-        where position is the line's position in the diff (required for GitHub API)
+        where position is the line's position in the diff
     """
     result = {}
     current_file = None
     line_number = 0
-    position = 0  # Track position in the diff
+    position = 0  # Track position in the diff (still useful for debugging)
     
     # Extract filename and line information from diff
     lines = diff_text.split('\n')
     
-    # First pass - identify file boundaries in the diff for better position tracking
-    file_boundaries = []
-    current_start = 0
-    
-    for i, line in enumerate(lines):
+    # Process the diff to extract file paths and line numbers
+    for line in lines:
+        # New file in diff
         if line.startswith('diff --git'):
-            if current_start < i:
-                file_boundaries.append((current_start, i - 1))
-            current_start = i
-    
-    # Add the last file boundary
-    if current_start < len(lines):
-        file_boundaries.append((current_start, len(lines) - 1))
-    
-    # Debug the file boundaries
-    logger.debug(f"Identified {len(file_boundaries)} file boundaries in diff")
-    
-    # Second pass - process each file's diff separately for accurate position tracking
-    for start_idx, end_idx in file_boundaries:
-        position = 1  # Reset position for each file (1-indexed for GitHub API)
-        current_file = None
-        line_number = 0
-        
-        for i in range(start_idx, end_idx + 1):
-            line = lines[i]
+            position = 0  # Reset position counter for each new file
+            continue
             
-            # New file in diff
-            if line.startswith('+++'):
-                path_match = re.match(r'\+\+\+ b/(.*)', line)
-                if path_match:
-                    current_file = path_match.group(1)
-                    result[current_file] = []
-                    line_number = 0
-                    logger.debug(f"Processing file: {current_file}")
-                position += 1
-                continue
-                
-            # Skip removal marker lines but increment position
-            if line.startswith('---'):
-                position += 1
-                continue
-                
-            # Line numbers in hunk header
-            if line.startswith('@@'):
-                match = re.search(r'@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@', line)
-                if match:
-                    line_number = int(match.group(1)) - 1  # -1 because we increment before using
-                    logger.debug(f"Found hunk header, new line number start: {line_number + 1}")
-                position += 1
-                continue
-                
-            # Track actual diff lines with position
+        # New file path
+        if line.startswith('+++'):
+            path_match = re.match(r'\+\+\+ b/(.*)', line)
+            if path_match:
+                current_file = path_match.group(1)
+                result[current_file] = []
+                line_number = 0
+                logger.debug(f"Processing file: {current_file}")
             position += 1
+            continue
             
-            # Skip removal lines but still count position
-            if line.startswith('-'):
-                continue
-                
-            # Process addition and context lines
-            if line.startswith('+'):
+        # Skip old file path marker
+        if line.startswith('---'):
+            position += 1
+            continue
+            
+        # Parse hunk header for line numbers
+        if line.startswith('@@'):
+            match = re.search(r'@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@', line)
+            if match:
+                line_number = int(match.group(1)) - 1  # -1 because we increment before using
+                logger.debug(f"Found hunk header, new line number start: {line_number + 1}")
+            position += 1
+            continue
+            
+        # Increment position for each line in the diff
+        position += 1
+        
+        # Skip removal lines (-)
+        if line.startswith('-'):
+            continue
+            
+        # Process addition and context lines
+        if line.startswith('+') or not line.startswith('\\'):  # Skip "No newline" markers
+            if current_file:
                 line_number += 1
-                if current_file:
-                    # Store both the line number and position
-                    result[current_file].append((line_number, position, line[1:]))
-                    logger.debug(f"Added line mapping: {current_file}:{line_number} -> position {position}")
-            elif not line.startswith('\\'):  # Skip "No newline" markers
-                line_number += 1
-                if current_file:
-                    # Store both the line number and position
-                    result[current_file].append((line_number, position, line))
+                content = line[1:] if line.startswith('+') else line
+                # Store line number, position, and content
+                result[current_file].append((line_number, position, content))
     
-    # Verify the mapping by checking line counts
+    # Log file mapping summary
     for file_path, lines in result.items():
         logger.debug(f"Mapped {len(lines)} lines for file {file_path}")
-        if lines:
-            # Log a few sample mappings for debugging
-            samples = lines[:min(3, len(lines))]
-            for line_num, pos, content_preview in samples:
-                content_preview = content_preview[:30] + "..." if len(content_preview) > 30 else content_preview
-                logger.debug(f"  {file_path}:{line_num} -> pos {pos}: {content_preview}")
     
     return result
 
