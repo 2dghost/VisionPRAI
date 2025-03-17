@@ -352,6 +352,21 @@ def post_line_comments(
     }
     url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews"
     
+    # Get the latest commit SHA for the PR
+    try:
+        commits_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/commits"
+        commits_response = requests.get(commits_url, headers=headers)
+        commits_response.raise_for_status()
+        commits = commits_response.json()
+        if not commits:
+            logger.error("No commits found for PR")
+            return False
+        latest_commit_sha = commits[-1]["sha"]
+        logger.debug(f"Using latest commit SHA: {latest_commit_sha}")
+    except Exception as e:
+        logger.error(f"Failed to get latest commit SHA: {str(e)}")
+        return False
+    
     # Format comments for the API
     formatted_comments = []
     for i, comment in enumerate(comments):
@@ -365,31 +380,41 @@ def post_line_comments(
         
         formatted_comment = {
             "path": comment["path"],
-            "body": body,
-            "side": "RIGHT"  # Comment on the new version of the file
+            "body": body
         }
         
-        # Use position if available, otherwise use line number
+        # Use position if available, otherwise use line/side
         if "position" in comment:
             formatted_comment["position"] = comment["position"]
             logger.debug(f"Using position {comment['position']} for comment on {comment['path']}")
         else:
+            # Use line and side parameters (newer API)
             formatted_comment["line"] = comment["line"]
-            logger.debug(f"Using line {comment['line']} for comment on {comment['path']}")
+            formatted_comment["side"] = "RIGHT"  # Comment on the new version of the file
+            logger.debug(f"Using line {comment['line']} with side RIGHT for comment on {comment['path']}")
         
         formatted_comments.append(formatted_comment)
     
+    # Create a summary of the review
+    review_body = "AI PR Review - Line Comments\n\n"
+    review_body += f"I've reviewed the changes and left {len(comments)} specific comments on the code."
+    
+    # Create the review with comments
     data = {
-        "event": "COMMENT",
+        "commit_id": latest_commit_sha,
+        "body": review_body,
+        "event": "COMMENT",  # Can be APPROVE, REQUEST_CHANGES, or COMMENT
         "comments": formatted_comments
     }
     
     try:
-        logger.info(f"Posting {len(comments)} line comments on PR #{pr_number} in {repo}")
+        logger.info(f"Creating review with {len(comments)} line comments on PR #{pr_number} in {repo}")
         
         # Log the request payload for debugging (excluding large bodies)
         debug_data = {
+            "commit_id": data["commit_id"],
             "event": data["event"],
+            "body_length": len(data["body"]),
             "comments": [
                 {
                     "path": c["path"],
@@ -408,27 +433,59 @@ def post_line_comments(
         if response.status_code >= 400:
             logger.error(f"GitHub API error: {response.text}")
             
-            # If we get a 422 error (validation failed), try posting comments one by one
+            # If we get a 422 error (validation failed), try posting comments individually
             if response.status_code == 422:
-                logger.info("Received 422 error, trying to post comments one by one")
+                logger.info("Received 422 error, trying to post individual reviews")
                 success = True
+                
+                # Try posting individual reviews for each comment
                 for i, comment in enumerate(formatted_comments):
                     try:
-                        single_data = {
+                        individual_data = {
+                            "commit_id": latest_commit_sha,
+                            "body": f"Comment {i+1}/{len(formatted_comments)}",
                             "event": "COMMENT",
                             "comments": [comment]
                         }
-                        single_response = requests.post(url, headers=headers, json=single_data)
-                        if single_response.status_code >= 400:
-                            logger.error(f"Failed to post comment {i+1}: {single_response.text}")
-                            success = False
+                        
+                        individual_response = requests.post(url, headers=headers, json=individual_data)
+                        if individual_response.status_code >= 400:
+                            logger.error(f"Failed to post individual review {i+1}: {individual_response.text}")
+                            
+                            # As a last resort, try posting as a direct comment
+                            try:
+                                direct_comment_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/comments"
+                                direct_data = {
+                                    "body": comment["body"],
+                                    "commit_id": latest_commit_sha,
+                                    "path": comment["path"],
+                                }
+                                
+                                # Add position or line/side parameters
+                                if "position" in comment:
+                                    direct_data["position"] = comment["position"]
+                                else:
+                                    direct_data["line"] = comment["line"]
+                                    direct_data["side"] = "RIGHT"
+                                
+                                direct_response = requests.post(direct_comment_url, headers=headers, json=direct_data)
+                                if direct_response.status_code >= 400:
+                                    logger.error(f"Failed to post direct comment {i+1}: {direct_response.text}")
+                                    success = False
+                                else:
+                                    logger.info(f"Successfully posted direct comment {i+1}/{len(formatted_comments)}")
+                            except Exception as e:
+                                logger.error(f"Error posting direct comment {i+1}: {str(e)}")
+                                success = False
                         else:
-                            logger.info(f"Successfully posted comment {i+1}/{len(formatted_comments)}")
+                            logger.info(f"Successfully posted individual review {i+1}/{len(formatted_comments)}")
+                        
                         # Add a delay to avoid rate limits
                         time.sleep(2)
                     except Exception as e:
-                        logger.error(f"Error posting comment {i+1}: {str(e)}")
+                        logger.error(f"Error posting individual review {i+1}: {str(e)}")
                         success = False
+                
                 return success
             
         response.raise_for_status()
