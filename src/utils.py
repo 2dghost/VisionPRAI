@@ -207,6 +207,8 @@ def post_line_comments(
 
 def create_review_with_individual_comments(repo, pr_number, token, comments, commit_sha):
     """Helper function to create a review and add comments one by one."""
+    logger.info("*** USING DRAFT REVIEW APPROACH: This creates a draft review, adds comments, then submits it ***")
+    
     headers = {
         "Accept": "application/vnd.github.v3+json",
         "Authorization": f"Bearer {token}",

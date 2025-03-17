@@ -879,7 +879,14 @@ def review_pr(config_path: Optional[str] = None, verbose: bool = False) -> bool:
                     
                     # Post the comments
                     if valid_comments:
-                        line_comment_success = post_line_comments(repo, pr_number, github_token, valid_comments)
+                        logger.info("Posting line comments with overview_text - this should use the draft review approach")
+                        line_comment_success = post_line_comments(
+                            repo, 
+                            pr_number, 
+                            github_token, 
+                            valid_comments,
+                            overview_text=review_text  # Pass the review text as the overview
+                        )
                         if not line_comment_success:
                             logger.error("Failed to post line comments - API call returned False",
                                         context={"repo": repo, "pr_number": pr_number})
