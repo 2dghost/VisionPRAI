@@ -167,14 +167,23 @@ def get_environment_variables() -> Tuple[str, str, str]:
     if not github_token:
         logger.error("GITHUB_TOKEN environment variable is required")
         raise MissingConfigurationError("GITHUB_TOKEN")
+    
+    # Debug log all environment variables related to GitHub events
+    logger.debug("Environment variables:")
+    for key in sorted(os.environ.keys()):
+        if "GITHUB" in key:
+            # Mask token values for security
+            value = os.environ[key]
+            if "TOKEN" in key:
+                value = "***" if value else "not set"
+            logger.debug(f"  {key}: {value}")
         
     # Get repository and PR number
     if "GITHUB_REPOSITORY" in os.environ and "GITHUB_EVENT_NUMBER" in os.environ:
         # Running in GitHub Actions
         repo = os.environ["GITHUB_REPOSITORY"]
         pr_number = os.environ["GITHUB_EVENT_NUMBER"]
-        logger.debug("Running in GitHub Actions environment", 
-                    context={"repo": repo, "pr_number": pr_number})
+        logger.info(f"Running in GitHub Actions environment (repo: {repo}, PR #: {pr_number})")
     else:
         # Running locally
         repo = os.environ.get("PR_REPOSITORY")
@@ -960,7 +969,25 @@ def main():
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose logging")
     args = parser.parse_args()
     
+    logger.info("=========================================================")
+    logger.info("Starting AI PR Review - Triggered by workflow")
+    if "GITHUB_EVENT_NAME" in os.environ:
+        logger.info(f"Triggered by GitHub event: {os.environ.get('GITHUB_EVENT_NAME')}")
+    if "GITHUB_EVENT_ACTION" in os.environ:
+        logger.info(f"Event action: {os.environ.get('GITHUB_EVENT_ACTION')}")
+    logger.info("=========================================================")
+    
     success = review_pr(config_path=args.config, verbose=args.verbose)
+    
+    if success:
+        logger.info("=========================================================")
+        logger.info("AI PR Review completed successfully")
+        logger.info("=========================================================")
+    else:
+        logger.error("=========================================================")
+        logger.error("AI PR Review failed")
+        logger.error("=========================================================")
+    
     sys.exit(0 if success else 1)
 
 
