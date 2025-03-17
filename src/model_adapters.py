@@ -9,6 +9,7 @@ import requests
 import time
 import random
 import logging
+import re
 from typing import Dict, Any, Optional, Callable, Union
 
 
@@ -124,41 +125,58 @@ class ModelAdapter:
             except Exception as e:
                 error_message = str(e).lower()
                 
-                # More comprehensive check for rate limiting errors
-                is_rate_limit = any(phrase in error_message for phrase in [
+                # Enhanced comprehensive check for rate limiting errors with specific provider patterns
+                rate_limit_patterns = [
+                    # General rate limiting phrases
                     "rate limit", "ratelimit", "too many requests", "429", 
                     "quota exceeded", "capacity", "throttle", "overloaded",
                     "too fast", "slow down", "limits exceeded", "service unavailable",
-                    "503", "502", "500", "bandwidth exceeded", "usage limit"
-                ])
+                    "503", "502", "500", "bandwidth exceeded", "usage limit",
+                    # Provider-specific patterns
+                    "token rate limit", "tokens per minute", "tokens per day",
+                    "rate_limit_exceeded", "insufficient_quota", "resource_exhausted",
+                    "tpm limit", "rpm limit", "request limit", "usage_limit",
+                    "max_tokens_exceeded", "context_length_exceeded",
+                    "billing quota exceeded", "model capacity", "server busy"
+                ]
+                
+                is_rate_limit = any(phrase in error_message for phrase in rate_limit_patterns)
+                
+                # Check for HTTP status codes in the error message
+                status_code_match = re.search(r'status code (\d+)', error_message)
+                if status_code_match:
+                    status_code = int(status_code_match.group(1))
+                    # Consider these status codes as rate limiting
+                    if status_code in [429, 503, 502, 500, 520, 524]:
+                        is_rate_limit = True
                 
                 # On the last attempt, re-raise the exception
                 if attempt == self.max_retries:
                     logger.error(f"Final retry attempt failed: {str(e)}", exc_info=True)
                     raise RuntimeError(f"API call failed after {self.max_retries} attempts: {str(e)}")
                 
-                # Calculate backoff with jitter (full jitter implementation)
-                max_jitter = backoff * (1 + self.jitter)
-                sleep_time = random.uniform(backoff * (1 - self.jitter), max_jitter)
-                
-                # Ensure sleep time doesn't exceed max_backoff
-                sleep_time = min(sleep_time, self.max_backoff)
+                # Calculate backoff with full jitter implementation
+                # Full jitter formula: random(0, min(cap, base * 2^attempt))
+                current_max = min(self.max_backoff, backoff * (2 ** (attempt - 1)))
+                sleep_time = random.uniform(0, current_max)
                 
                 if is_rate_limit:
                     logger.warning(
-                        f"Rate limit detected. Retrying in {sleep_time:.2f} seconds. "
+                        f"Rate limit detected. Implementing full jitter backoff. "
+                        f"Retrying in {sleep_time:.2f} seconds. "
                         f"Attempt {attempt}/{self.max_retries}. Error: {str(e)}"
                     )
                 else:
                     logger.warning(
-                        f"API call failed: {str(e)}. Retrying in {sleep_time:.2f} seconds. "
+                        f"API call failed: {str(e)}. Implementing full jitter backoff. "
+                        f"Retrying in {sleep_time:.2f} seconds. "
                         f"Attempt {attempt}/{self.max_retries}"
                     )
                 
                 # Sleep before retry
                 time.sleep(sleep_time)
                 
-                # Exponential backoff for next attempt
+                # Exponential backoff for next attempt (will be used in calculating next sleep time)
                 backoff = min(backoff * self.backoff_factor, self.max_backoff)
 
     def _call_openai(self, prompt: str) -> str:

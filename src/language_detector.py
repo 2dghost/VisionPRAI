@@ -138,18 +138,74 @@ class LanguageDetector:
         ".babelrc": "javascript",
         ".eslintrc": "javascript",
         ".prettierrc": "javascript",
+        # Add more special files
+        "dockerfile": "dockerfile",
+        "makefile": "makefile",
+        "jenkinsfile": "jenkinsfile",
+        "vagrantfile": "ruby",
+        ".gitattributes": "gitconfig",
+        ".editorconfig": "editorconfig",
+        "tsconfig.json": "typescript",
+        "tslint.json": "typescript",
+        "angular.json": "javascript",
+        "vue.config.js": "javascript",
+        "webpack.config.js": "javascript",
+        "babel.config.js": "javascript",
+        "rollup.config.js": "javascript",
+        "next.config.js": "javascript",
+        "nuxt.config.js": "javascript",
+        "jest.config.js": "javascript",
+        "karma.conf.js": "javascript",
+        "gulpfile.js": "javascript",
+        "gruntfile.js": "javascript",
+        "mix.exs": "elixir",
+        "rebar.config": "erlang",
+        "serverless.yml": "yaml",
+        "k8s.yaml": "kubernetes",
+        "kubernetes.yaml": "kubernetes",
+        "helm.yaml": "kubernetes",
+        "chart.yaml": "kubernetes",
+        "docker-compose.yml": "docker-compose",
+        "docker-compose.yaml": "docker-compose",
+        "nginx.conf": "nginx",
+        "httpd.conf": "apache",
+        "apache2.conf": "apache",
+        ".htaccess": "apache",
+        "cmakelists.txt": "cmake",
+        "poetry.lock": "python",
+        "pipfile": "python",
+        "manage.py": "python",
+        "procfile": "system",
+        ".env": "env",
+        ".env.example": "env",
+        ".env.sample": "env",
+        ".npmrc": "npm",
+        ".yarnrc": "yarn",
+        "yarn.lock": "yarn",
+        "gradlew": "gradle",
+        "mvnw": "maven",
     }
     
     # Language-specific patterns for security and bug detection
     LANGUAGE_PATTERNS = {
         "python": {
             "sql_injection": [
-                r'execute\(\s*f["\']',  # f-string in SQL execution
-                r'execute\(\s*".*?\%.*?"',  # % string formatting in SQL
-                r'execute\(\s*".*?\{.*?\}.*?"\.format',  # .format() in SQL
-                r'cursor\.execute\(\s*[\'"][^\'")]*\'\s*\+',  # String concatenation in SQL
-                r'raw_sql\s*=',  # Raw SQL assignment
-                r'rawQuery\(',  # Raw query execution
+                r'cursor\.execute\(\s*[\'"`].*?\%.*?[\'"`]',  # String formatting in SQL
+                r'cursor\.execute\(\s*[\'"`].*?\{.*?\}\.format\(.*?\).*?[\'"`]',  # str.format in SQL
+                r'cursor\.execute\(\s*[\'"`].*?\+.*?[\'"`]',  # String concatenation in SQL
+                r'cursor\.execute\(\s*f[\'"`].*?[\'"`]',  # f-strings in SQL
+                r'cursor\.executemany\(\s*[\'"`].*?\%.*?[\'"`]',  # String formatting in executemany
+                r'cursor\.executemany\(\s*[\'"`].*?\{.*?\}\.format\(.*?\).*?[\'"`]',  # str.format in executemany
+                r'cursor\.executemany\(\s*[\'"`].*?\+.*?[\'"`]',  # String concatenation in executemany
+                r'cursor\.executemany\(\s*f[\'"`].*?[\'"`]',  # f-strings in executemany
+                r'.*\.execute\(\s*[\'"`].*?\%.*?[\'"`]',  # String formatting with any execute
+                r'.*\.execute\(\s*[\'"`].*?\{.*?\}\.format\(.*?\).*?[\'"`]',  # str.format with any execute
+                r'.*\.execute\(\s*[\'"`].*?\+.*?[\'"`]',  # String concatenation with any execute
+                r'.*\.execute\(\s*f[\'"`].*?[\'"`]',  # f-strings with any execute
+                r'.*?\.raw\(\s*[\'"`].*?[\'"`]',  # Django raw() queries
+                r'.*?\.extra\(\s*[\'"`].*?[\'"`]',  # Django extra() queries
+                r'db\.engine\.execute\(',  # SQLAlchemy direct execution
+                r'text\(\s*f[\'"`].*?[\'"`]',  # SQLAlchemy text() with f-strings
             ],
             "command_injection": [
                 r'os\.system\(\s*[^)]*\)',
@@ -158,6 +214,16 @@ class LanguageDetector:
                 r'eval\(\s*[^)]*\)',
                 r'__import__\(\s*[^)]*\)',  # Dynamic imports
                 r'globals\(\)\[.*?\]',  # Dynamic code execution
+                r'os\.popen\(\s*[^)]*\)',  # Command execution via popen
+                r'commands\.getoutput\(\s*[^)]*\)',  # getoutput command execution
+                r'commands\.getstatusoutput\(\s*[^)]*\)',  # getstatusoutput command execution
+                r'subprocess\.check_output\(\s*[^)]*\)',  # check_output command execution
+                r'subprocess\.getoutput\(\s*[^)]*\)',  # getoutput command execution
+                r'.*?shell\s*=\s*True',  # Shell=True in subprocess calls
+                r'importlib\.import_module\(\s*[^)]*\)',  # Dynamic module import
+                r'os\.spawn[lpe]\w?\(',  # os.spawn functions
+                r'multiprocessing\.Process\(',  # Process creation with arbitrary target
+                r'shlex\.split\(',  # Command string parsing for execution
             ],
             "path_traversal": [
                 r'open\(\s*[^)]*\)',
@@ -166,6 +232,19 @@ class LanguageDetector:
                 r'with\s+open\(',  # File operations
                 r'os\.makedirs\(',  # Directory creation
                 r'shutil\.copy',  # File copying operations
+                r'os\.walk\(',  # Directory traversal
+                r'glob\.glob\(',  # File pattern matching
+                r'os\.listdir\(',  # Directory listing
+                r'.*\.read_csv\(',  # Pandas file reading
+                r'.*\.read_excel\(',  # Excel file reading
+                r'.*\.load\(',  # Generic load operations
+                r'pickle\.load\(',  # Pickle loading (security risk)
+                r'json\.load\(',  # JSON file loading
+                r'yaml\.load\(',  # YAML loading without safe loader
+                r'zipfile\.ZipFile\(',  # ZIP file operations
+                r'tarfile\.open\(',  # TAR file operations
+                r'urllib\.urlretrieve\(',  # File download
+                r'requests\.get\(.+?stream=True',  # Streaming file download
             ],
             "error_handling": [
                 r'except\s*:',  # Bare except
@@ -174,6 +253,14 @@ class LanguageDetector:
                 r'except.*?:\s*pass',  # Exception with only pass
                 r'except[^:]*:\s*return',  # Exception without logging
                 r'except[^:]*:\s*print\(',  # Using print in exception
+                r'assert\s+',  # Assertions that may be disabled
+                r'logging\.(?:debug|info|warning|error|critical)\(\s*[\'"`](?!.*?\{.*?\}).*?[\'"`]\s*\)',  # Logging without format args
+                r'(?:debug|info|warning|error|critical)\(\s*f[\'"`]',  # Logging with f-strings
+                r'traceback\.print_exc\(',  # Printing exceptions
+                r'sys\.exc_info\(',  # Using exc_info without handling
+                r'raise\s+\w+\s*\(',  # Creating new exception without context
+                r'except.*?as\s+e:.*?raise\s+\w+',  # Not preserving exception context
+                r'except\s+(\w+)(,\s*\w+)*\s*:',  # Multiple exception types without variable
             ],
             "hardcoded_secrets": [
                 r'password\s*=\s*["\'][^"\']{8,}["\']',
@@ -183,6 +270,15 @@ class LanguageDetector:
                 r'auth_token\s*=\s*["\'][^"\']{8,}["\']',
                 r'credentials\s*=\s*["\'][^"\']{8,}["\']',
                 r'bearer\s*=\s*["\'][^"\']{8,}["\']',
+                r'key\s*=\s*["\'][A-Za-z0-9+/]{32,}["\']',  # Base64 encoded keys
+                r'aws_access_key_id\s*=\s*["\'][A-Z0-9]{20}["\']',  # AWS access key pattern
+                r'aws_secret_access_key\s*=\s*["\'][A-Za-z0-9+/]{40}["\']',  # AWS secret key pattern
+                r'-----BEGIN\s+(?:RSA\s+|DSA\s+|EC\s+)?PRIVATE\s+KEY-----',  # Private key headers
+                r'oauth_token\s*=\s*["\'][^"\']{8,}["\']',  # OAuth tokens
+                r'token\s*=\s*["\'](?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?["\']',  # Base64 encoded tokens
+                r'AKIA[0-9A-Z]{16}',  # AWS access key pattern in-line
+                r'ghp_[a-zA-Z0-9]{36}',  # GitHub personal access token pattern
+                r'(?:SK|sk)_(?:live|test)_[a-zA-Z0-9]{24,}',  # Stripe API key pattern
             ],
             "performance_issues": [
                 r'for\s+.*?\s+in\s+.*?:\s*if\s+',  # Loop with filter (could use comprehension)
@@ -190,6 +286,14 @@ class LanguageDetector:
                 r'\+\s*=.*?for',  # String concatenation in loops
                 r'\.keys\(\).*?for.*?in',  # Unnecessary keys() call
                 r'\.items\(\).*?for.*?,.*?in',  # Unnecessary items() call when only keys needed
+                r'for\s+.*?in\s+.*?:\s*yield',  # Generator could be a generator expression
+                r'for\s+.*?in\s+range\(len\(',  # Range len anti-pattern
+                r'[\[\(](?:[^,]*?,){9,}[^\]\)]*?[\]\)]',  # Very long tuple/list literal
+                r'\.copy\(\).*?for',  # Unnecessary copy in loop
+                r'(?:sort|sorted)\(.*?lambda',  # Sort with lambda (should use key functions)
+                r'if\s+.*?\s+and\s+.*?\s+and\s+.*?\s+and\s+',  # Complex if condition
+                r'\.replace\(.*?\)\.replace\(.*?\)\.replace\(',  # Chain of string replacements
+                r'[\.\[]count\(.*?for',  # Count in loop
             ],
         },
         "javascript": {
@@ -199,6 +303,14 @@ class LanguageDetector:
                 r'\.execute\(\s*[\'"`].*?\$\{.*?\}.*?[\'"`]',  # Template literals
                 r'database\.run\(',  # Direct database operations
                 r'connection\.query\(',  # SQL query execution
+                r'db\.query\(',  # Database query
+                r'mysql\.query\(',  # MySQL query 
+                r'pool\.query\(',  # Database pool query
+                r'knex\.raw\(',  # Knex.js raw query
+                r'sequelize\.query\(',  # Sequelize query
+                r'mongoose\.exec\(',  # Mongoose execution
+                r'typeorm\.query\(',  # TypeORM query
+                r'prisma\.\$queryRaw\(',  # Prisma raw query
             ],
             "command_injection": [
                 r'exec\(\s*[^)]*\)',
@@ -494,16 +606,45 @@ class LanguageDetector:
             # Handle docker-compose files as a special case first
             if filename.startswith("docker-compose") and (filename.endswith(".yml") or filename.endswith(".yaml")):
                 return "docker-compose"
+                
+            # Handle Kubernetes manifests
+            if (filename.endswith(".yml") or filename.endswith(".yaml")) and any(
+                kube_pattern in file_path.lower() for kube_pattern in 
+                ["kubernetes", "k8s", "deployment", "service", "ingress", "configmap", "secret", "statefulset"]
+            ):
+                return "kubernetes"
             
             # Check if the exact filename is in our known files dictionary
             if filename in self.language_extensions:
                 language = self.language_extensions[filename]
                 logger.debug(f"Detected language for {file_path} by exact filename match: {language}")
                 return language
+            
+            # Check for files with config suffixes like .config.js
+            if "config.js" in filename:
+                return "javascript"
+            if "config.ts" in filename:
+                return "typescript"
                 
             # Special case for Dockerfile
-            if filename == "dockerfile" or file_path.lower().endswith("dockerfile"):
+            if filename == "dockerfile" or file_path.lower().endswith("dockerfile") or "dockerfile." in filename.lower():
                 return "dockerfile"
+                
+            # Special case for package.json
+            if filename == "package.json":
+                return "javascript"
+                
+            # Special case for CI configuration files
+            if filename.startswith(".github/workflows/") and (filename.endswith(".yml") or filename.endswith(".yaml")):
+                return "github-actions"
+            if filename == ".travis.yml" or filename == ".travis.yaml":
+                return "travis-ci"
+            if filename == ".gitlab-ci.yml" or filename == ".gitlab-ci.yaml":
+                return "gitlab-ci"
+            if filename == "azure-pipelines.yml" or filename == "azure-pipelines.yaml":
+                return "azure-pipelines"
+            if "circleci" in filename and (filename.endswith(".yml") or filename.endswith(".yaml")):
+                return "circle-ci"
             
             # For files with extensions, check by extension
             _, ext = os.path.splitext(file_path)
@@ -522,7 +663,35 @@ class LanguageDetector:
                     return "javascript"
                 elif "prettier" in filename:
                     return "javascript"
+                elif "git" in filename:
+                    return "gitconfig"
+                elif "vim" in filename:
+                    return "viml"
+                elif "zsh" in filename:
+                    return "shell"
+                elif "bash" in filename:
+                    return "shell"
             
+            # Check for environment files
+            if filename.startswith(".env"):
+                return "env"
+                
+            # Check for README files
+            if filename.startswith("readme."):
+                return "markdown"
+                
+            # Check for Dockerfiles with extensions
+            if "dockerfile" in filename or "containerfile" in filename:
+                return "dockerfile"
+                
+            # Check for makefiles
+            if "makefile" in filename:
+                return "makefile"
+                
+            # Check for CI config files
+            if any(ci in filename for ci in ["jenkins", "gitlab-ci", "travis", "github/workflows", "circleci"]):
+                return "ci-config"
+                
             # Return unknown if no match found
             logger.warning(f"Could not detect language for file: {file_path}")
             return "unknown"

@@ -399,6 +399,23 @@ def generate_prompt(diff: str, files: List[Dict[str, Any]], config: Dict[str, An
         "    - Explain security implications in detail for any security-related issues\n"
         "17. For complex changes, provide a step-by-step explanation of your reasoning\n"
         "18. When identifying a pattern issue, explain the broader design principle involved\n"
+        "19. Enhance explanations with examples of how the issue could manifest in production\n"
+        "20. For security issues, explain the potential attack vectors and mitigation strategies\n"
+        "21. When applicable, cite relevant CVEs or known vulnerabilities related to the issue\n"
+        "22. For less experienced developers, include educational content that explains:\n"
+        "    - Fundamental programming concepts related to the issue\n"
+        "    - Common pitfalls and how to avoid them\n"
+        "    - Why certain patterns are considered anti-patterns\n"
+        "    - How the issue might impact system stability, performance, or security\n"
+        "    - Learning resources for deeper understanding (documentation, articles, books)\n"
+        "23. For each alternative approach mentioned:\n"
+        "    - Explain its advantages and disadvantages compared to your suggestion\n"
+        "    - When it might be the preferred solution\n"
+        "    - Any performance or implementation trade-offs\n"
+        "24. When suggesting patterns or best practices:\n"
+        "    - Explain the reasoning behind the pattern\n"
+        "    - How it improves code quality, readability, or maintainability\n"
+        "    - Real-world examples of where this pattern has proven successful\n"
     )
     
     # Add cursor rules guidance if available
@@ -452,6 +469,11 @@ def generate_prompt(diff: str, files: List[Dict[str, Any]], config: Dict[str, An
         "- Potential issues or bugs prevented by the change\n"
         "- How the change improves code quality, performance, or security\n"
         "- Any relevant best practices, patterns or standards that support the suggestion\n"
+        "- Educational context to help less experienced developers understand WHY the change matters\n"
+        "- References to documentation or resources when applicable\n"
+        "- Alternative approaches that could also solve the issue with their trade-offs\n"
+        "- Examples of how the issue could manifest in production environments\n"
+        "- For security issues, explanation of attack vectors and mitigation strategies\n"
     )
     
     if include_recommendations:
@@ -480,6 +502,11 @@ def generate_prompt(diff: str, files: List[Dict[str, Any]], config: Dict[str, An
         "- ALL recommendations MUST be in the form of specific code changes with file and line references\n"
         "- Provide comprehensive explanations that help developers learn and improve their coding skills\n"
         "- Include context about why your suggestions follow best practices or improve the codebase\n"
+        "- Make your explanations educational for programmers of all skill levels\n"
+        "- Include specific examples, not just vague assertions\n"
+        "- Cite relevant documentation, standards, or articles when appropriate\n"
+        "- For each alternative approach mentioned, explain why you chose your suggested approach\n"
+        "- Tailor your explanations to the apparent experience level of the developer\n"
     )
     
     return prompt
