@@ -586,7 +586,7 @@ class LanguageDetector:
     @with_context
     def detect_language(self, file_path: str) -> str:
         """
-        Detect the programming language of a file based on its extension.
+        Detect the programming language of a file based on its extension or filename.
         
         Args:
             file_path: Path to the file
@@ -610,7 +610,7 @@ class LanguageDetector:
             # Handle Kubernetes manifests
             if (filename.endswith(".yml") or filename.endswith(".yaml")) and any(
                 kube_pattern in file_path.lower() for kube_pattern in 
-                ["kubernetes", "k8s", "deployment", "service", "ingress", "configmap", "secret", "statefulset"]
+                ["kubernetes", "k8s", "deployment", "service", "ingress", "configmap", "secret", "statefulset", "pod", "replicaset", "daemonset", "job", "cronjob"]
             ):
                 return "kubernetes"
             
@@ -620,31 +620,133 @@ class LanguageDetector:
                 logger.debug(f"Detected language for {file_path} by exact filename match: {language}")
                 return language
             
+            # Check for CI/CD configuration files
+            # GitHub Actions
+            if ".github/workflows/" in file_path.lower() and (filename.endswith(".yml") or filename.endswith(".yaml")):
+                return "github-actions"
+            
+            # Other CI/CD config file patterns
+            ci_cd_patterns = {
+                ".travis.yml": "travis-ci",
+                ".travis.yaml": "travis-ci",
+                ".gitlab-ci.yml": "gitlab-ci",
+                ".gitlab-ci.yaml": "gitlab-ci",
+                "azure-pipelines.yml": "azure-pipelines",
+                "azure-pipelines.yaml": "azure-pipelines",
+                "jenkins.yml": "jenkins",
+                "jenkins.yaml": "jenkins",
+                "jenkinsfile": "jenkins",
+                "cloudbuild.yml": "google-cloud-build",
+                "cloudbuild.yaml": "google-cloud-build",
+                "bitbucket-pipelines.yml": "bitbucket-pipelines",
+                "appveyor.yml": "appveyor",
+                "buildspec.yml": "aws-codebuild",
+                "buildspec.yaml": "aws-codebuild",
+                ".drone.yml": "drone-ci"
+            }
+            
+            if filename in ci_cd_patterns:
+                return ci_cd_patterns[filename]
+            
+            # Check for CircleCI config
+            if "circleci" in file_path.lower() and (filename.endswith(".yml") or filename.endswith(".yaml")):
+                return "circle-ci"
+            
             # Check for files with config suffixes like .config.js
-            if "config.js" in filename:
-                return "javascript"
-            if "config.ts" in filename:
-                return "typescript"
-                
-            # Special case for Dockerfile
+            config_patterns = {
+                ".config.js": "javascript",
+                ".config.ts": "typescript",
+                ".config.json": "json",
+                ".config.yml": "yaml",
+                ".config.yaml": "yaml",
+                ".config.xml": "xml",
+                ".config.toml": "toml",
+                ".config.ini": "ini",
+                ".config.py": "python",
+                ".rc": "config",
+                ".cfg": "config",
+                ".conf": "config"
+            }
+            
+            for pattern, lang in config_patterns.items():
+                if filename.endswith(pattern):
+                    return lang
+            
+            # Special case for Dockerfile variants
             if filename == "dockerfile" or file_path.lower().endswith("dockerfile") or "dockerfile." in filename.lower():
                 return "dockerfile"
-                
-            # Special case for package.json
-            if filename == "package.json":
-                return "javascript"
-                
-            # Special case for CI configuration files
-            if filename.startswith(".github/workflows/") and (filename.endswith(".yml") or filename.endswith(".yaml")):
-                return "github-actions"
-            if filename == ".travis.yml" or filename == ".travis.yaml":
-                return "travis-ci"
-            if filename == ".gitlab-ci.yml" or filename == ".gitlab-ci.yaml":
-                return "gitlab-ci"
-            if filename == "azure-pipelines.yml" or filename == "azure-pipelines.yaml":
-                return "azure-pipelines"
-            if "circleci" in filename and (filename.endswith(".yml") or filename.endswith(".yaml")):
-                return "circle-ci"
+            
+            # Special cases for package manager files
+            package_files = {
+                "package.json": "javascript",
+                "package-lock.json": "javascript",
+                "yarn.lock": "javascript",
+                "composer.json": "php",
+                "composer.lock": "php",
+                "cargo.toml": "rust",
+                "cargo.lock": "rust",
+                "gemfile": "ruby",
+                "gemfile.lock": "ruby",
+                "pyproject.toml": "python",
+                "requirements.txt": "python",
+                "poetry.lock": "python",
+                "pipfile": "python",
+                "pipfile.lock": "python",
+                "build.gradle": "java",
+                "build.gradle.kts": "kotlin",
+                "pom.xml": "java",
+                "go.mod": "go",
+                "go.sum": "go",
+                "makefile": "makefile",
+                "cmakelists.txt": "cmake"
+            }
+            
+            if filename in package_files:
+                return package_files[filename]
+            
+            # Check for configuration and dot files
+            config_files = {
+                ".gitignore": "gitignore",
+                ".gitattributes": "gitconfig",
+                ".editorconfig": "editorconfig",
+                ".babelrc": "javascript",
+                ".eslintrc": "javascript",
+                ".eslintrc.js": "javascript",
+                ".eslintrc.json": "javascript",
+                ".prettierrc": "javascript",
+                ".prettierrc.js": "javascript",
+                ".prettierrc.json": "javascript",
+                "tsconfig.json": "typescript",
+                "tslint.json": "typescript",
+                "angular.json": "javascript",
+                "vue.config.js": "javascript",
+                "webpack.config.js": "javascript",
+                "babel.config.js": "javascript",
+                "rollup.config.js": "javascript",
+                "next.config.js": "javascript",
+                "nuxt.config.js": "javascript",
+                "jest.config.js": "javascript",
+                "karma.conf.js": "javascript",
+                "gulpfile.js": "javascript",
+                "gruntfile.js": "javascript",
+                ".env": "env",
+                ".env.example": "env",
+                ".env.local": "env",
+                ".env.development": "env",
+                ".env.production": "env",
+                ".env.test": "env",
+                ".npmrc": "npm",
+                ".yarnrc": "yarn",
+                "docker-compose.override.yml": "docker-compose",
+                "docker-compose.override.yaml": "docker-compose",
+                "nginx.conf": "nginx",
+                "httpd.conf": "apache",
+                "apache2.conf": "apache",
+                ".htaccess": "apache"
+            }
+            
+            if filename in config_files:
+                return config_files[filename]
             
             # For files with extensions, check by extension
             _, ext = os.path.splitext(file_path)

@@ -102,7 +102,7 @@ class ModelAdapter:
     
     def _with_retry(self, api_call_func: Callable, prompt: str) -> str:
         """
-        Execute an API call with smart exponential backoff for rate limiting.
+        Execute an API call with full jitter exponential backoff for rate limiting.
         
         Args:
             api_call_func: The function to call the API
@@ -132,23 +132,42 @@ class ModelAdapter:
                     "quota exceeded", "capacity", "throttle", "overloaded",
                     "too fast", "slow down", "limits exceeded", "service unavailable",
                     "503", "502", "500", "bandwidth exceeded", "usage limit",
+                    
                     # Provider-specific patterns
+                    # OpenAI specific
                     "token rate limit", "tokens per minute", "tokens per day",
                     "rate_limit_exceeded", "insufficient_quota", "resource_exhausted",
                     "tpm limit", "rpm limit", "request limit", "usage_limit",
                     "max_tokens_exceeded", "context_length_exceeded",
-                    "billing quota exceeded", "model capacity", "server busy"
+                    "billing quota exceeded", "model capacity", "server busy",
+                    
+                    # Anthropic specific
+                    "rate_limit", "daily_request_limit", "concurrency_limit",
+                    "token_quota_exceeded", "model_overloaded", "capacity_error",
+                    
+                    # Google specific
+                    "resource_exhausted", "quota_exceeded", "user_quota_exceeded",
+                    "resource_limit", "service_resource_exhausted", "daily_limit_exceeded",
+                    
+                    # Mistral specific
+                    "mistral.api_error", "mistral.rate_limit_error", "usage_limits",
+                    "concurrent_requests", "tokens_per_minute", "mistral_capacity",
+                    
+                    # General API errors that might indicate rate limiting
+                    "connection reset", "connection timeout", "socket timeout",
+                    "gateway timeout", "bad gateway", "temporarily unavailable"
                 ]
                 
                 is_rate_limit = any(phrase in error_message for phrase in rate_limit_patterns)
                 
                 # Check for HTTP status codes in the error message
-                status_code_match = re.search(r'status code (\d+)', error_message)
+                status_code_match = re.search(r'(?:status(?:\s+|[_-])code(?:\s+|[:-])|http[/-])(\d+)', error_message)
                 if status_code_match:
                     status_code = int(status_code_match.group(1))
                     # Consider these status codes as rate limiting
-                    if status_code in [429, 503, 502, 500, 520, 524]:
+                    if status_code in [429, 503, 502, 500, 520, 524, 408, 425, 503]:
                         is_rate_limit = True
+                        logger.warning(f"Detected rate limiting HTTP status code: {status_code}")
                 
                 # On the last attempt, re-raise the exception
                 if attempt == self.max_retries:
