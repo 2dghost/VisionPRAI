@@ -13,6 +13,7 @@ import re
 import yaml
 from typing import Dict, List, Optional, Any, Tuple
 import time
+import requests
 
 import sys
 import os
@@ -478,6 +479,46 @@ def generate_prompt(diff: str, files: List[Dict[str, Any]], config: Dict[str, An
 
 
 @with_context
+def get_existing_reviews(repo: str, pr_number: str, token: str) -> List[Dict[str, Any]]:
+    """
+    Get existing reviews for a PR.
+    
+    Args:
+        repo: Repository in the format 'owner/repo'
+        pr_number: Pull request number
+        token: GitHub token
+        
+    Returns:
+        List of existing review data
+    """
+    headers = {
+        "Accept": "application/vnd.github.v3+json",
+        "Authorization": f"Bearer {token}",
+        "X-GitHub-Api-Version": "2022-11-28"
+    }
+    
+    url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews"
+    
+    try:
+        logger.info(f"Fetching existing reviews for PR #{pr_number} in {repo}")
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()
+        reviews = response.json()
+        
+        # Filter only bot reviews (assuming bot uses the GitHub token which shows as GitHub Actions)
+        bot_reviews = [
+            review for review in reviews 
+            if review.get("user", {}).get("login", "") == "github-actions[bot]"
+        ]
+        
+        logger.info(f"Found {len(bot_reviews)} existing bot reviews")
+        return bot_reviews
+    except Exception as e:
+        logger.error(f"Error fetching existing reviews: {str(e)}")
+        return []
+
+
+@with_context
 def review_pr(config_path: Optional[str] = None, verbose: bool = False) -> bool:
     """
     Main function to review a pull request.
@@ -503,6 +544,11 @@ def review_pr(config_path: Optional[str] = None, verbose: bool = False) -> bool:
         # Get environment variables
         logger.info("Retrieving environment variables")
         github_token, repo, pr_number = get_environment_variables()
+        
+        # Check for existing reviews to determine our strategy
+        existing_reviews = get_existing_reviews(repo, pr_number, github_token)
+        is_first_review = len(existing_reviews) == 0
+        logger.info(f"Is this the first review of this PR? {is_first_review}")
         
         # Initialize model adapter
         provider = config['model']['provider']
@@ -568,8 +614,8 @@ def review_pr(config_path: Optional[str] = None, verbose: bool = False) -> bool:
         logger.error(f"Error generating review: {str(e)}")
         return False
     
-    # Post summary overview as general comment
-    logger.info("Posting overview comment")
+    # Prepare summary overview
+    logger.info("Preparing overview comment")
     
     # Extract just summary and overview sections
     summary_pattern = r'(?:^|\n)## Summary\s*\n(.*?)(?=\n##|\Z)'
@@ -584,27 +630,40 @@ def review_pr(config_path: Optional[str] = None, verbose: bool = False) -> bool:
     logger.debug(f"Review text received (first 1000 chars): {review_text[:1000]}...")
     logger.debug(f"Review text received (last 1000 chars): {review_text[-1000:]}...")
     
-    overview_text = "# AI Review Summary\n\n"
-    
-    if summary_match:
-        overview_text += f"## Summary\n{summary_match.group(1).strip()}\n\n"
-        logger.debug("Summary section found and extracted")
+    # Construct the overview text differently based on whether this is the first review
+    if is_first_review:
+        overview_text = "# AI Review Summary\n\n"
+        
+        if summary_match:
+            overview_text += f"## Summary\n{summary_match.group(1).strip()}\n\n"
+            logger.debug("Summary section found and extracted")
+        else:
+            logger.warning("No summary section found in the review text")
+            # Add a fallback summary if none was found
+            overview_text += "## Summary\nThis PR contains code changes that have been reviewed by the AI.\n\n"
+        
+        if overview_match:
+            overview_text += f"## Overview of Changes\n{overview_match.group(1).strip()}\n\n"
+            logger.debug("Overview section found and extracted")
+        else:
+            logger.warning("No overview section found in the review text")
+            # Add a fallback overview if none was found
+            overview_text += "## Overview of Changes\n- Code changes were analyzed\n- See detailed comments for specific feedback\n\n"
+        
+        if recommendations_match:
+            overview_text += f"## Recommendations\n{recommendations_match.group(1).strip()}\n\n"
+            logger.debug("Recommendations section found and extracted")
     else:
-        logger.warning("No summary section found in the review text")
-        # Add a fallback summary if none was found
-        overview_text += "## Summary\nThis PR contains code changes that have been reviewed by the AI.\n\n"
-    
-    if overview_match:
-        overview_text += f"## Overview of Changes\n{overview_match.group(1).strip()}\n\n"
-        logger.debug("Overview section found and extracted")
-    else:
-        logger.warning("No overview section found in the review text")
-        # Add a fallback overview if none was found
-        overview_text += "## Overview of Changes\n- Code changes were analyzed\n- See detailed comments for specific feedback\n\n"
-    
-    if recommendations_match:
-        overview_text += f"## Recommendations\n{recommendations_match.group(1).strip()}\n\n"
-        logger.debug("Recommendations section found and extracted")
+        # For subsequent reviews, create a more focused update message
+        overview_text = f"# AI Review Update\n\n"
+        
+        if summary_match:
+            overview_text += f"## Summary of Changes\n{summary_match.group(1).strip()}\n\n"
+        else:
+            overview_text += "## Summary of Changes\nI've reviewed the latest changes in this PR.\n\n"
+            
+        if recommendations_match:
+            overview_text += f"## New Recommendations\n{recommendations_match.group(1).strip()}\n\n"
     
     # Add a note about code-specific comments
     overview_text += "\n\n> Detailed feedback has been added as review comments on specific code lines."
@@ -867,7 +926,7 @@ def review_pr(config_path: Optional[str] = None, verbose: bool = False) -> bool:
                             pr_number, 
                             github_token, 
                             valid_comments,
-                            overview_text=review_text  # Pass the review text as the overview
+                            overview_text=overview_text  # Pass the overview text
                         )
                         if not line_comment_success:
                             logger.error("Failed to post line comments - API call returned False",
