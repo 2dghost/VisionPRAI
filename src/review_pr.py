@@ -14,6 +14,7 @@ import yaml
 from typing import Dict, List, Optional, Any, Tuple
 import time
 import requests
+from datetime import datetime
 
 import sys
 import os
@@ -527,6 +528,121 @@ def get_existing_reviews(repo: str, pr_number: str, token: str) -> List[Dict[str
         return []
 
 
+def get_pr_diff(repo: str, pr_number: str, token: str) -> str:
+    """
+    Get the diff of a PR from GitHub.
+    
+    Args:
+        repo: Repository in the format 'owner/repo'
+        pr_number: Pull request number
+        token: GitHub token
+        
+    Returns:
+        The diff of the PR
+    """
+    headers = {
+        "Accept": "application/vnd.github.v3.diff",
+        "Authorization": f"Bearer {token}",  # Use "Bearer" instead of "token"
+        "User-Agent": "VisionPRAI"
+    }
+    url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}"
+    
+    logger.info(f"Fetching diff for PR #{pr_number} in {repo}")
+    logger.debug(f"GitHub API URL: {url}")
+    token_preview = f"{token[:4]}...{token[-4:]}" if len(token) > 8 else "***"
+    logger.debug(f"Using token (preview): {token_preview}")
+    
+    try:
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()
+        diff = response.text
+        
+        # Log response details
+        logger.debug(f"Response status code: {response.status_code}")
+        logger.debug(f"Response headers: {dict(response.headers)}")
+        
+        # Debug the retrieved diff
+        diff_size = len(diff)
+        diff_preview = diff[:500] + "..." if diff_size > 500 else diff
+        
+        if diff_size == 0:
+            logger.error("Retrieved empty diff from GitHub API")
+        else:
+            logger.info(f"Retrieved diff of size {diff_size} bytes")
+            logger.debug(f"Diff preview: {diff_preview}")
+            
+            # Count files in diff
+            file_count = diff.count("diff --git ")
+            logger.info(f"Detected {file_count} files in the diff")
+            
+        return diff
+    except Exception as e:
+        logger.error(f"Error getting PR diff: {str(e)}")
+        if isinstance(e, requests.exceptions.HTTPError) and hasattr(e, 'response'):
+            logger.error(f"Response status code: {e.response.status_code}")
+            logger.error(f"Response content: {e.response.text[:500]}")
+        return ""
+
+
+@with_context
+def get_pr_files_with_changes(repo: str, pr_number: str, token: str) -> List[Dict[str, Any]]:
+    """
+    Get the list of files that have been changed in the current push to a PR.
+    This is different from get_pr_files, which gets all files in the PR.
+    
+    For synchronize events, this helps identify which files were changed in this push.
+    
+    Args:
+        repo: Repository in the format 'owner/repo'
+        pr_number: Pull request number
+        token: GitHub token
+        
+    Returns:
+        List of files that have changes
+    """
+    headers = {
+        "Accept": "application/vnd.github.v3+json",
+        "Authorization": f"Bearer {token}",
+        "User-Agent": "VisionPRAI"
+    }
+    
+    # First, get the PR details to find the latest commit
+    pr_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}"
+    logger.info(f"Fetching PR details to get latest commits")
+    
+    try:
+        pr_response = requests.get(pr_url, headers=headers)
+        pr_response.raise_for_status()
+        pr_data = pr_response.json()
+        
+        # Extract the latest commit SHA
+        head_sha = pr_data.get("head", {}).get("sha")
+        if not head_sha:
+            logger.error("Failed to get latest commit SHA from PR data")
+            return []
+            
+        logger.info(f"Latest commit SHA for PR: {head_sha}")
+        
+        # Now get the files changed in this commit
+        commit_url = f"https://api.github.com/repos/{repo}/commits/{head_sha}"
+        logger.info(f"Fetching files changed in latest commit: {head_sha}")
+        
+        commit_response = requests.get(commit_url, headers=headers)
+        commit_response.raise_for_status()
+        commit_data = commit_response.json()
+        
+        files = commit_data.get("files", [])
+        logger.info(f"Found {len(files)} files changed in latest commit")
+        
+        return files
+    except Exception as e:
+        logger.error(f"Error getting files changed in latest commit: {str(e)}")
+        if isinstance(e, requests.exceptions.HTTPError) and hasattr(e, 'response'):
+            logger.error(f"Response status code: {e.response.status_code}")
+            logger.error(f"Response content: {e.response.text[:500]}")
+        return []
+
+
 @with_context
 def review_pr(config_path: Optional[str] = None, verbose: bool = False) -> bool:
     """
@@ -553,6 +669,40 @@ def review_pr(config_path: Optional[str] = None, verbose: bool = False) -> bool:
         # Get environment variables
         logger.info("Retrieving environment variables")
         github_token, repo, pr_number = get_environment_variables()
+        
+        # Check what kind of event triggered this run
+        event_name = os.environ.get("GITHUB_EVENT_NAME", "")
+        event_action = os.environ.get("GITHUB_ACTION", "")
+        
+        logger.info(f"Event name: {event_name}, Action: {event_action}")
+        
+        # For synchronize events, we only want to review what changed
+        is_synchronize_event = (event_name == "pull_request" and 
+                               event_action == "synchronize")
+        
+        if is_synchronize_event:
+            logger.info("This is a synchronize event (new push to PR)")
+        
+        # Verify token is working by checking rate limit
+        try:
+            headers = {
+                "Accept": "application/vnd.github.v3+json",
+                "Authorization": f"Bearer {github_token}",
+                "User-Agent": "VisionPRAI"
+            }
+            rate_limit_url = "https://api.github.com/rate_limit"
+            rate_limit_response = requests.get(rate_limit_url, headers=headers)
+            rate_limit_response.raise_for_status()
+            rate_limit_data = rate_limit_response.json()
+            
+            remaining = rate_limit_data.get("resources", {}).get("core", {}).get("remaining", "unknown")
+            reset_time = rate_limit_data.get("resources", {}).get("core", {}).get("reset", 0)
+            reset_datetime = datetime.fromtimestamp(reset_time).strftime("%Y-%m-%d %H:%M:%S") if reset_time else "unknown"
+            
+            logger.info(f"GitHub API rate limit: {remaining} remaining, resets at {reset_datetime}")
+        except Exception as e:
+            logger.warning(f"Failed to check GitHub API rate limit: {str(e)}")
+            # Continue anyway, as this is just a verification step
         
         # Check for existing reviews to determine our strategy
         existing_reviews = get_existing_reviews(repo, pr_number, github_token)
@@ -589,6 +739,16 @@ def review_pr(config_path: Optional[str] = None, verbose: bool = False) -> bool:
     if not files:
         logger.warning("No files found. Continuing with diff only.")
         
+    # For synchronize events, try to get just the files that changed in this push
+    if is_synchronize_event and files:
+        changed_files = get_pr_files_with_changes(repo, pr_number, github_token)
+        
+        if changed_files:
+            logger.info(f"Found {len(changed_files)} files changed in this push")
+            # Replace the full files list with just the changed files
+            files = changed_files
+            logger.info("Will only review files changed in this push")
+    
     # Apply file filtering if files were found
     if files:
         logger.info("Applying file filtering rules")

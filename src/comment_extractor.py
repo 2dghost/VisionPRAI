@@ -323,22 +323,87 @@ class CommentExtractor:
         return comment_text
 
     @with_context
-    def extract_line_comments(self, review_text: str, 
-                             file_line_map: Dict[str, List[Tuple[int, int, str]]]) -> List[Dict[str, Any]]:
+    def extract_line_comments(self, review_text: str, file_line_map: Dict[str, List[Tuple[int, int, str]]]) -> List[Dict[str, Any]]:
         """
-        Extract line-specific comments from a review text.
+        Extract line comments from the review text.
         
         Args:
-            review_text: The review text containing code comments
-            file_line_map: Mapping of file paths to (line_num, position, content)
+            review_text: The review text containing comments
+            file_line_map: Mapping of file paths to line information
             
         Returns:
-            List of comment dictionaries with path, line, and body
+            List of comment dictionaries with keys: path, line, position, body
         """
-        # If no files in the diff, we can't extract line comments
+        all_comments = []
+        
         if not file_line_map:
             self.logger.warning("No files in the diff, can't extract line comments")
-            return []
+            
+            # DEBUG: Print review text to check if it contains comments
+            if review_text:
+                preview = review_text[:500] + "..." if len(review_text) > 500 else review_text
+                self.logger.debug(f"Review text preview: {preview}")
+                
+                # Try to extract comments directly without the file_line_map filtering
+                # This will create file-level comments at least to show feedback
+                try:
+                    self.logger.info("Attempting to extract file-level comments from review")
+                    # Look for file sections like "### file.py"
+                    file_pattern = r'(?:^|\n)(?:#+|\*+) ?(?:File|In|For)[ :]+([^\n:]+)(?::|[\s\n])'
+                    file_matches = list(re.finditer(file_pattern, review_text, re.IGNORECASE))
+                    
+                    if file_matches:
+                        self.logger.info(f"Found {len(file_matches)} potential file references")
+                        for i, match in enumerate(file_matches):
+                            file_name = match.group(1).strip()
+                            self.logger.debug(f"Found file reference: {file_name}")
+                            
+                            # Extract the section content until the next file heading or end
+                            start_pos = match.end()
+                            end_pos = len(review_text)
+                            if i < len(file_matches) - 1:
+                                end_pos = file_matches[i+1].start()
+                            
+                            section_content = review_text[start_pos:end_pos].strip()
+                            self.logger.debug(f"Section content length: {len(section_content)}")
+                            
+                            if section_content:
+                                # Create a file-level comment
+                                comment = {
+                                    "path": file_name,
+                                    "body": f"# Review for {file_name}\n\n{section_content}",
+                                    "position": 1,  # Default position at start of file
+                                    "line": 1,      # Default to first line
+                                    "side": "RIGHT" # Comment on the right side (new version)
+                                }
+                                all_comments.append(comment)
+                                self.logger.info(f"Added file-level comment for {file_name}")
+                
+                    # If no file sections were found, create a general PR comment
+                    if not file_matches and len(review_text) > 50:
+                        # Find the most important files in the PR review
+                        potential_files = re.findall(r'`([^`]+\.[a-zA-Z0-9]+)`', review_text)
+                        
+                        if potential_files:
+                            file_name = potential_files[0]  # Use the first mentioned file
+                            self.logger.info(f"No file sections found, but referenced file: {file_name}")
+                            
+                            # Create a general PR comment
+                            comment = {
+                                "path": file_name,
+                                "body": "# General PR Review\n\n" + review_text,
+                                "position": 1,
+                                "line": 1,
+                                "side": "RIGHT"
+                            }
+                            all_comments.append(comment)
+                            self.logger.info("Added general PR comment to most referenced file")
+                        else:
+                            self.logger.warning("No file references found in review, can't create comments")
+                except Exception as e:
+                    self.logger.error(f"Error extracting file-level comments: {str(e)}")
+            
+            return all_comments
         
         # Log the files available in the diff
         self.logger.debug(f"Files in diff: {list(file_line_map.keys())}")

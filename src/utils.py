@@ -243,13 +243,31 @@ def create_review_with_individual_comments(repo: str, pr_number: str, token: str
     
     for attempt in range(1, max_attempts + 1):
         try:
-            # First, check for existing reviews
-            existing_reviews_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews"
+            # Get the latest commit on the PR for review
             headers = {
                 "Accept": "application/vnd.github.v3+json",
                 "Authorization": f"Bearer {token}",
                 "X-GitHub-Api-Version": "2022-11-28"
             }
+            
+            # Get the PR details to find the latest commit
+            pr_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}"
+            logger.info(f"Fetching PR details to get latest commit SHA")
+            
+            pr_response = requests.get(pr_url, headers=headers)
+            pr_response.raise_for_status()
+            pr_data = pr_response.json()
+            
+            # Extract the latest commit SHA
+            head_sha = pr_data.get("head", {}).get("sha")
+            if not head_sha:
+                logger.error("Failed to get latest commit SHA from PR data")
+                return False
+                
+            logger.info(f"Latest commit SHA for PR: {head_sha}")
+            
+            # First, check for existing reviews
+            existing_reviews_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews"
             
             logger.info(f"Checking for existing reviews on PR #{pr_number}")
             
@@ -275,8 +293,11 @@ def create_review_with_individual_comments(repo: str, pr_number: str, token: str
                 logger.info("Creating a new draft review")
                 create_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews"
                 
-                # Start a new review
-                create_data = {"event": "PENDING"}
+                # Start a new review with the latest commit
+                create_data = {
+                    "event": "PENDING",
+                    "commit_id": head_sha  # Explicitly set the commit ID to the latest commit
+                }
                 create_response = requests.post(create_url, headers=headers, json=create_data)
                 create_response.raise_for_status()
                 review_data = create_response.json()
@@ -291,6 +312,25 @@ def create_review_with_individual_comments(repo: str, pr_number: str, token: str
                 
                 # Sleep briefly to ensure the review is created before we add comments
                 time.sleep(1)
+                
+            # Do we have any comments to add?
+            if not comments:
+                logger.warning("No comments to add to the review")
+                
+                # If overview text is provided, submit the review anyway with just the body
+                if overview_text:
+                    submit_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews/{review_id}/events"
+                    submit_data = {
+                        "body": overview_text,
+                        "event": "COMMENT"
+                    }
+                    logger.info("Submitting review with overview text only (no comments)")
+                    submit_response = requests.post(submit_url, headers=headers, json=submit_data)
+                    submit_response.raise_for_status()
+                    return True
+                else:
+                    logger.warning("No overview text provided either, skipping review submission")
+                    return False
             
             # Now add comments to the review
             logger.info(f"Adding {len(comments)} comments to review")
