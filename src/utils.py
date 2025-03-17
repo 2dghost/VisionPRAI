@@ -369,25 +369,16 @@ def post_line_comments(
     
     # Get the diff for the PR to calculate positions correctly
     try:
-        diff_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}"
-        diff_headers = {
-            "Accept": "application/vnd.github.v3.diff",
-            "Authorization": f"Bearer {token}",
-            "X-GitHub-Api-Version": "2022-11-28"
-        }
-        diff_response = requests.get(diff_url, headers=diff_headers)
-        diff_response.raise_for_status()
-        diff_content = diff_response.text
-        
-        # Also get the files modified in this PR
+        # Use the specific PR endpoint to get files with correct position information
         files_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/files"
         files_response = requests.get(files_url, headers=headers)
         files_response.raise_for_status()
         files = files_response.json()
         
-        # Create a map of file paths to their positions in the diff
+        # Create a map of file paths to their patches and positions
         file_positions = {}
         for file in files:
+            # Store the full patch for position calculation
             file_positions[file["filename"]] = {
                 "patch": file.get("patch", ""),
                 "changes": file.get("changes", 0),
@@ -399,23 +390,50 @@ def post_line_comments(
         logger.error(f"Failed to get diff information: {str(e)}")
         # Continue without diff position mapping - we'll use line numbers directly
     
+    # Calculate diff positions for each comment
+    for comment in comments:
+        file_path = comment["path"]
+        line_num = int(comment.get("line", 1))
+        
+        # Calculate the position parameter required by GitHub
+        if file_path in file_positions and "patch" in file_positions[file_path]:
+            patch = file_positions[file_path]["patch"]
+            if patch:
+                # Parse the patch to find the position
+                position = calculate_position_in_diff(patch, line_num)
+                if position is not None:
+                    comment["position"] = position
+                    logger.debug(f"Calculated position {position} for line {line_num} in {file_path}")
+                else:
+                    logger.warning(f"Could not calculate position for line {line_num} in {file_path}, using line number")
+                    # GitHub may require position parameter, not just line
+                    comment["position"] = line_num
+            else:
+                logger.warning(f"No patch found for {file_path}, using line number as position")
+                comment["position"] = line_num
+        else:
+            logger.warning(f"File {file_path} not found in diff, using line number as position")
+            comment["position"] = line_num
+    
     # Format comments for the API
     formatted_comments = []
     for comment in comments:
         path = comment["path"]
         line_num = int(comment.get("line", 1))
+        position = comment.get("position", line_num)
         
         formatted_comment = {
             "path": path,
             "body": comment["body"],
-            "line": line_num,
-            "side": comment.get("side", "RIGHT")
+            "position": position,
+            "commit_id": latest_commit_sha
         }
         
-        # For multi-line comments, add start_line and start_side
+        # For multi-line comments, add start_line, start_side and side
         if "start_line" in comment:
             formatted_comment["start_line"] = int(comment["start_line"])
             formatted_comment["start_side"] = comment.get("start_side", "RIGHT")
+            formatted_comment["side"] = comment.get("side", "RIGHT")
         
         formatted_comments.append(formatted_comment)
     
@@ -429,24 +447,13 @@ def post_line_comments(
     # Create individual comments instead of a batch review
     for i, comment in enumerate(formatted_comments):
         try:
+            # Use the PR comments endpoint for line-specific comments
             comment_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/comments"
             
-            comment_data = {
-                "commit_id": latest_commit_sha,
-                "path": comment["path"],
-                "body": comment["body"],
-                "line": comment["line"],
-                "side": comment["side"]
-            }
+            # Log the full comment data for debugging
+            logger.debug(f"Comment data for {comment['path']}: {comment}")
             
-            # Add start_line and start_side for multi-line comments
-            if "start_line" in comment:
-                comment_data["start_line"] = comment["start_line"]
-                comment_data["start_side"] = comment.get("start_side", "RIGHT")
-            
-            logger.debug(f"Creating comment {i+1}/{len(formatted_comments)}: {comment['path']}:{comment['line']}")
-            
-            comment_response = requests.post(comment_url, headers=headers, json=comment_data)
+            comment_response = requests.post(comment_url, headers=headers, json=comment)
             
             if comment_response.status_code >= 400:
                 error_body = comment_response.text
@@ -686,3 +693,72 @@ def extract_code_blocks(text: str) -> List[str]:
         code_blocks.append(match.group(1).strip())
     
     return code_blocks
+
+
+def calculate_position_in_diff(patch: str, target_line: int) -> Optional[int]:
+    """
+    Calculate the position in a diff for a given line number.
+    
+    The position is the line number in the diff, not the line number in the file.
+    This is required by GitHub's API for line comments.
+    
+    Args:
+        patch: The patch string from GitHub's API
+        target_line: The line number in the new file to find the position for
+        
+    Returns:
+        The position in the diff, or None if the line is not found
+    """
+    if not patch:
+        return None
+    
+    # Split the patch into lines
+    lines = patch.split('\n')
+    
+    # Start at position 1 (GitHub's API is 1-indexed for positions)
+    position = 1
+    current_line = 0
+    
+    # Parse the hunk headers to find the right position
+    for line in lines:
+        position += 1  # Increment position for each line in the diff
+        
+        # Check if this is a hunk header
+        if line.startswith('@@'):
+            # Extract the start line and count from the hunk header
+            # Format: @@ -old_start,old_count +new_start,new_count @@
+            parts = line.split(' ')
+            if len(parts) >= 3:
+                new_info = parts[2]
+                if new_info.startswith('+'):
+                    # Extract the new file start line number
+                    new_info = new_info[1:]  # Remove the + sign
+                    if ',' in new_info:
+                        new_start = int(new_info.split(',')[0])
+                    else:
+                        new_start = int(new_info)
+                    
+                    # Update the current line to the start of this hunk
+                    current_line = new_start
+                    continue
+        
+        # Skip removed lines (starting with '-') as they don't affect the new file line numbers
+        if line.startswith('-'):
+            # Decrement position for removed lines (they count in the diff but not the file)
+            position -= 1
+            continue
+        
+        # For added lines (starting with '+') or context lines, increment the current line
+        if not line.startswith('@@'):
+            # If this is the target line, return the current position
+            if current_line == target_line:
+                # Position is the current 0-based index in the patch
+                return position - 1  # Adjust for 0-based indexing in the patch
+            
+            # Only increment the file line number for added/context lines
+            if not line.startswith('-'):
+                current_line += 1
+    
+    # If we get here, the target line was not found in the diff
+    logger.warning(f"Line {target_line} not found in the diff")
+    return None
