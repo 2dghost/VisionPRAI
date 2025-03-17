@@ -1,0 +1,104 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+# External Tools Guide
+
+This guide documents the external tools and APIs available in this project.
+
+## Web Search Tools
+
+### Exa AI Search
+- Real-time web search capabilities
+- AI-powered result analysis
+- Contextual information extraction
+
+Example usage patterns:
+```python
+# Performing a web search
+results = await mcp.exa.search(
+    query="latest AI developments",
+    numResults=10
+)
+```
+
+### General Web Search
+- Up-to-date information retrieval
+- Multiple source aggregation
+- Result verification
+
+Example usage patterns:
+```python
+# Searching the web
+results = await mcp.web.search(
+    search_term="technical topic",
+    explanation="Finding current information"
+)
+```
+
+## External API Integration
+
+### API Best Practices
+1. Authentication
+   - Store API keys in environment variables
+   - Never commit credentials to version control
+   - Use secure key management systems
+
+2. Rate Limiting
+   - Implement exponential backoff
+   - Cache frequently accessed data
+   - Monitor API usage
+
+3. Error Handling
+   - Handle API-specific error codes
+   - Implement retry logic
+   - Log failed requests
+
+4. Data Validation
+   - Validate API responses
+   - Handle missing or malformed data
+   - Implement fallback behavior
+
+### Common Patterns
+```python
+# Environment variables for API keys
+import os
+
+API_KEY = os.getenv("SERVICE_API_KEY")
+if not API_KEY:
+    raise ValueError("API key not found")
+
+# Rate limiting with backoff
+from time import sleep
+from random import uniform
+
+def backoff_retry(func, max_retries=3):
+    for attempt in range(max_retries):
+        try:
+            return func()
+        except Exception as e:
+            if attempt == max_retries - 1:
+                raise
+            sleep(uniform(1, 2 ** attempt))
+```
+
+## Security Guidelines
+
+1. API Key Management
+   - Use environment variables
+   - Rotate keys regularly
+   - Limit key permissions
+
+2. Data Privacy
+   - Minimize sensitive data exposure
+   - Implement data encryption
+   - Follow compliance requirements
+
+3. Request Security
+   - Use HTTPS for all requests
+   - Validate SSL certificates
+   - Implement request signing
+
+@src/**/*.{py,ts,tsx,js,jsx}
+@tests/**/*.{py,ts,tsx,js,jsx} 

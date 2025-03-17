@@ -12,6 +12,7 @@ import logging
 import re
 import yaml
 from typing import Dict, List, Optional, Any, Tuple
+import time
 
 import sys
 import os
@@ -71,7 +72,7 @@ logger = get_logger("ai-pr-reviewer")
 @with_context
 def load_config(config_path: str = "config.yaml") -> Dict[str, Any]:
     """
-    Load configuration from a YAML file.
+    Load configuration from a YAML file and merge with cursor rules.
     
     Args:
         config_path: Path to the config file
@@ -96,6 +97,27 @@ def load_config(config_path: str = "config.yaml") -> Dict[str, Any]:
         logger.error(f"Failed to parse YAML in config file: {e}",
                     context={"config_path": config_path, "error": str(e)})
         raise InvalidConfigurationError("config_file", f"Invalid YAML format: {e}")
+    
+    # Load cursor rules if they exist
+    cursor_rules_path = os.path.join(os.getcwd(), ".cursor", "rules")
+    if os.path.exists(cursor_rules_path):
+        logger.info("Loading cursor rules", context={"rules_path": cursor_rules_path})
+        try:
+            rules = {}
+            for rule_file in os.listdir(cursor_rules_path):
+                if rule_file.endswith(".mdc"):
+                    with open(os.path.join(cursor_rules_path, rule_file), "r") as f:
+                        rule_content = f.read()
+                        rules[rule_file[:-4]] = rule_content  # Remove .mdc extension
+            
+            # Add cursor rules to config
+            if rules:
+                config["cursor_rules"] = rules
+                logger.info("Successfully loaded cursor rules", 
+                           context={"rules_count": len(rules)})
+        except Exception as e:
+            logger.warning(f"Failed to load cursor rules: {e}",
+                         context={"error": str(e)})
     
     # Validate minimum required configuration
     if not config:
@@ -186,6 +208,9 @@ def generate_prompt(diff: str, files: List[Dict[str, Any]], config: Dict[str, An
     # Get focus areas from config
     focus_areas = config.get("review", {}).get("focus_areas", "")
     
+    # Get cursor rules if available
+    cursor_rules = config.get("cursor_rules", {})
+    
     # Check if file filtering is enabled
     file_filtering_enabled = config.get("review", {}).get("file_filtering", {}).get("enabled", False)
     exclude_patterns = config.get("review", {}).get("file_filtering", {}).get("exclude_patterns", [])
@@ -212,19 +237,36 @@ def generate_prompt(diff: str, files: List[Dict[str, Any]], config: Dict[str, An
     # Create a comprehensive prompt
     prompt = (
         "You are an expert code reviewer following best practices. "
-        "Analyze this PR diff and provide feedback on:\n"
+        "Analyze this PR diff and provide detailed, constructive feedback with concrete code improvements.\n"
         f"{focus_areas}\n\n"
-        "Make your suggestions actionable, clear, and specific to the code changes.\n"
-        "Focus on potential issues, improvements, and best practices.\n\n"
+        "CRITICAL: For each issue, you MUST format your line-specific comments exactly like this:\n\n"
+        "### filename.ext:line_number\n"
+        "Problem: <clear explanation of the issue>\n\n"
+        "```suggestion\n"
+        "<exact code that should replace the original code>\n"
+        "```\n\n"
+        "Explanation: <why this change improves the code>\n\n"
+        "Guidelines:\n"
+        "1. ALWAYS include the file name and line number in the header (### filename.ext:line_number)\n"
+        "2. Each suggestion must be preceded by a clear explanation of the issue\n"
+        "3. The suggestion block must contain the complete fixed code\n"
+        "4. After each suggestion, explain why your solution is better\n"
+        "5. Make suggestions ONLY for lines that exist in the diff\n"
+        "6. If you find ANY issues, you MUST provide at least one code suggestion\n"
+        "7. IMPORTANT: Each file-specific comment MUST start with '### filename.ext:line_number' format\n"
+        "8. DO NOT use any other format for file-specific comments\n"
+        "9. ALWAYS include file-specific comments in the 'File-Specific Comments' section\n"
+        "10. NEVER skip providing file-specific comments - they are the most important part of the review\n"
+        "11. NEVER provide general recommendations without specific code changes\n"
+        "12. ALL recommendations MUST be in the form of specific code changes with file and line references\n"
+        "13. DO NOT suggest 'Consider refactoring...' or similar vague recommendations - always provide exact code changes\n\n"
     )
     
-    # Add note about file filtering if enabled
-    if file_filtering_enabled and exclude_patterns:
-        patterns_str = ", ".join([f"`{p}`" for p in exclude_patterns])
-        prompt += (
-            f"Note: Some files matching the following patterns were excluded from this review: "
-            f"{patterns_str}.\n\n"
-        )
+    # Add cursor rules guidance if available
+    if cursor_rules:
+        prompt += "Follow these project-specific guidelines:\n\n"
+        for rule_name, rule_content in cursor_rules.items():
+            prompt += f"### {rule_name} Guidelines\n{rule_content}\n\n"
     
     # Add files and diff information
     prompt += (
@@ -233,49 +275,68 @@ def generate_prompt(diff: str, files: List[Dict[str, Any]], config: Dict[str, An
         f"```diff\n{diff}\n```\n\n"
     )
     
-    # Always use the file-oriented format regardless of template style
+    # Format instructions - IMPORTANT: Keep the exact format consistent for regex extraction
     prompt += (
-        "Format your review as a markdown document with the following structure:\n\n"
+        "Your review MUST follow this EXACT format with these EXACT section headers:\n\n"
     )
     
+    # Add sections with consistent headers that match our regex patterns
+    sections = []
+    
     if include_summary:
-        prompt += (
+        sections.append(
             "## Summary\n"
-            "Start with a concise 2-3 sentence summary of the PR's purpose and overall quality.\n\n"
+            "Provide a concise summary of the PR, including its purpose and overall quality.\n"
         )
     
     if include_overview:
-        prompt += (
+        sections.append(
             "## Overview of Changes\n"
-            "Provide a bullet-point list of the key changes made in this PR, focusing on what was added, modified, or fixed.\n\n"
+            "List the key changes and their impact. Highlight any architectural decisions.\n"
         )
     
-    # Prompt for file-based organization + line-specific comments
-    prompt += (
-        "## File-specific feedback\n"
-        "IMPORTANT: Organize your feedback in two ways to ensure proper code review formatting:\n\n"
-        "1. FIRST, provide detailed file-level feedback using this format:\n"
-        "## filename.ext\n"
-        "Overall feedback about this file, design patterns, structure, etc.\n\n"
-        "## another_file.ext\n"
-        "Overall feedback about this file.\n\n"
-        "2. SECOND, provide line-specific comments using one of these formats:\n"
-        "- In filename.ext, line 42: This code could be improved by...\n"
-        "- filename.ext:25: Consider using a more descriptive variable name\n"
-        "- In file `config.yaml` at line 10: The configuration is missing...\n\n"
-        "It is CRITICAL to use both approaches. Make sure the line numbers you reference actually exist in the changed files.\n"
-        "The line-specific comments will be displayed directly alongside the code in GitHub.\n\n"
+    # Always include detailed feedback section
+    sections.append(
+        "## Detailed Feedback\n"
+        "Provide detailed analysis of the code changes. Include specific issues and recommendations.\n"
+    )
+    
+    # Add a dedicated section for file-specific comments
+    sections.append(
+        "## File-Specific Comments\n"
+        "Include all line-specific comments here, using the exact format specified above (### filename.ext:line_number).\n"
+        "This section MUST contain at least one file-specific comment for each file with issues.\n"
+        "IMPORTANT: This section is required and will be used to post comments on specific lines of code.\n"
+        "DO NOT provide general recommendations - ONLY specific code changes with file and line references.\n"
     )
     
     if include_recommendations:
-        prompt += (
+        sections.append(
             "## Recommendations\n"
-            "End with 2-3 key recommendations or next steps.\n"
+            "IMPORTANT: Do NOT provide general text recommendations here. Instead, for each recommendation:\n"
+            "1. Identify the specific file and line number\n"
+            "2. Format as '### filename.ext:line_number'\n"
+            "3. Explain the issue\n"
+            "4. Provide a code suggestion block with the exact code change\n"
+            "5. Explain why your solution is better\n"
         )
     
+    # Add numbered sections to the prompt
+    for i, section in enumerate(sections, 1):
+        prompt += f"{i}. {section}"
+    
+    prompt += (
+        "IMPORTANT REMINDERS:\n"
+        "- ALWAYS include specific line numbers in the format 'filename.ext:line_number'\n"
+        "- Make suggestions ONLY for lines in the diff\n"
+        "- Each suggestion must be complete and valid code\n"
+        "- If you find ANY issues, you MUST provide at least one code suggestion\n"
+        "- Use the EXACT section headers shown above (## Summary, ## Overview of Changes, etc.)\n"
+        "- NEVER provide general recommendations without specific code changes\n"
+        "- ALL recommendations MUST be in the form of specific code changes with file and line references\n"
+    )
+    
     return prompt
-
-
 
 
 @with_context
@@ -357,6 +418,14 @@ def review_pr(config_path: Optional[str] = None, verbose: bool = False) -> bool:
     try:
         logger.info(f"Sending PR to {model_config['provider']} {model_config['model']} for review")
         review_text = model_adapter.generate_response(prompt)
+        
+        # Log the first part of the response for debugging
+        logger.debug(f"AI response first 500 chars: {review_text[:500]}")
+        
+        # Verify that we received a non-empty response
+        if not review_text or len(review_text.strip()) < 10:
+            logger.error("Received empty or very short response from AI model")
+            return False
     except Exception as e:
         logger.error(f"Error generating review: {str(e)}")
         return False
@@ -367,23 +436,58 @@ def review_pr(config_path: Optional[str] = None, verbose: bool = False) -> bool:
     # Extract just summary and overview sections
     summary_pattern = r'(?:^|\n)## Summary\s*\n(.*?)(?=\n##|\Z)'
     overview_pattern = r'(?:^|\n)## Overview of Changes\s*\n(.*?)(?=\n##|\Z)'
+    recommendations_pattern = r'(?:^|\n)## Recommendations\s*\n(.*?)(?=\n##|\Z)'
     
     summary_match = re.search(summary_pattern, review_text, re.DOTALL)
     overview_match = re.search(overview_pattern, review_text, re.DOTALL)
+    recommendations_match = re.search(recommendations_pattern, review_text, re.DOTALL)
+    
+    # Log the review text for debugging
+    logger.debug(f"Review text received (first 1000 chars): {review_text[:1000]}...")
+    logger.debug(f"Review text received (last 1000 chars): {review_text[-1000:]}...")
     
     overview_text = "# AI Review Summary\n\n"
+    
     if summary_match:
         overview_text += f"## Summary\n{summary_match.group(1).strip()}\n\n"
+        logger.debug("Summary section found and extracted")
+    else:
+        logger.warning("No summary section found in the review text")
+        # Add a fallback summary if none was found
+        overview_text += "## Summary\nThis PR contains code changes that have been reviewed by the AI.\n\n"
+    
     if overview_match:
         overview_text += f"## Overview of Changes\n{overview_match.group(1).strip()}\n\n"
+        logger.debug("Overview section found and extracted")
+    else:
+        logger.warning("No overview section found in the review text")
+        # Add a fallback overview if none was found
+        overview_text += "## Overview of Changes\n- Code changes were analyzed\n- See detailed comments for specific feedback\n\n"
+    
+    if recommendations_match:
+        overview_text += f"## Recommendations\n{recommendations_match.group(1).strip()}\n\n"
+        logger.debug("Recommendations section found and extracted")
     
     # Add a note about code-specific comments
     overview_text += "\n\n> Detailed feedback has been added as review comments on specific code lines."
     
-    overview_success = post_review_comment(repo, pr_number, github_token, overview_text)
-    if not overview_success:
-        logger.error("Failed to post overview comment")
-        # Continue anyway to post line comments
+    # Try to post the overview comment
+    try:
+        logger.info("Attempting to post overview comment")
+        overview_success = post_review_comment(repo, pr_number, github_token, overview_text)
+        if not overview_success:
+            logger.error("Failed to post overview comment - API call returned False")
+            # Try an alternative approach - post a simpler comment
+            simple_overview = "# AI Review\n\nThe AI has reviewed this PR. See the detailed comments for feedback."
+            logger.info("Attempting to post simplified overview comment")
+            simple_success = post_review_comment(repo, pr_number, github_token, simple_overview)
+            if not simple_success:
+                logger.error("Failed to post simplified overview comment")
+        else:
+            logger.info("Successfully posted overview comment")
+    except Exception as e:
+        logger.error(f"Exception while posting overview comment: {str(e)}", exc_info=True)
+        # Continue anyway to try posting line comments
     
     # Check if we should post line-specific comments
     line_comments_enabled = config.get("review", {}).get("line_comments", True)
@@ -398,35 +502,110 @@ def review_pr(config_path: Optional[str] = None, verbose: bool = False) -> bool:
             # First use the standard extractor for explicitly marked line comments
             comment_extractor = CommentExtractor(config_path=config_path or "config.yaml")
             standard_line_comments = comment_extractor.extract_line_comments(review_text, file_line_map)
+            logger.debug(f"Extracted {len(standard_line_comments)} standard line comments")
             
             # Now extract file-specific sections and convert them to line comments for each file
             file_sections = {}
-            file_section_pattern = r'(?:^|\n)## ([^\n:]+\.[^\n:]+)\s*\n(.*?)(?=\n## [^\n:]+\.[^\n:]|\Z)'
             
-            for match in re.finditer(file_section_pattern, review_text, re.DOTALL):
+            # Look for comments in both the main review and the Detailed Feedback section
+            detailed_feedback_pattern = r'(?:^|\n)## Detailed Feedback\s*\n(.*?)(?=\n##|\Z)'
+            detailed_feedback_match = re.search(detailed_feedback_pattern, review_text, re.DOTALL)
+            
+            # If we found a Detailed Feedback section, extract comments from there
+            detailed_feedback_text = ""
+            if detailed_feedback_match:
+                detailed_feedback_text = detailed_feedback_match.group(1).strip()
+                logger.debug("Detailed Feedback section found")
+            else:
+                # If no Detailed Feedback section, use the whole review text
+                detailed_feedback_text = review_text
+                logger.warning("No Detailed Feedback section found, using entire review text")
+                
+            # Also check for a File-Specific Comments section
+            file_comments_pattern = r'(?:^|\n)## File-Specific Comments\s*\n(.*?)(?=\n##|\Z)'
+            file_comments_match = re.search(file_comments_pattern, review_text, re.DOTALL)
+            
+            if file_comments_match:
+                file_comments_text = file_comments_match.group(1).strip()
+                logger.debug("File-Specific Comments section found")
+                # Append to detailed feedback text
+                detailed_feedback_text += "\n\n" + file_comments_text
+            
+            # Extract file-specific comments
+            file_section_pattern = r'(?:^|\n)### ([^\n:]+):(\d+)\s*\n(.*?)(?=\n### [^\n:]+:\d+|\Z)'
+            
+            file_section_matches = list(re.finditer(file_section_pattern, detailed_feedback_text, re.DOTALL))
+            logger.debug(f"Found {len(file_section_matches)} file section matches")
+            
+            # Log the detailed feedback text for debugging
+            logger.debug(f"Detailed feedback text (first 1000 chars): {detailed_feedback_text[:1000]}")
+            
+            # If no file section matches were found, try a more lenient pattern
+            if not file_section_matches:
+                logger.warning("No file section matches found with primary pattern, trying alternative pattern")
+                alt_file_section_pattern = r'(?:^|\n)(?:In|File|At) ([^\n:,]+)[,:]? (?:line|at line) (\d+)[:]?\s*\n(.*?)(?=\n(?:In|File|At) [^\n:,]+[,:]? (?:line|at line) \d+[:]?|\Z)'
+                file_section_matches = list(re.finditer(alt_file_section_pattern, detailed_feedback_text, re.DOTALL))
+                logger.debug(f"Found {len(file_section_matches)} file section matches with alternative pattern")
+            
+            for match in file_section_matches:
                 filename = match.group(1).strip()
-                content = match.group(2).strip()
+                line_number = int(match.group(2))
+                content = match.group(3).strip()
+                
+                logger.debug(f"Processing file section match: {filename}:{line_number}")
+                logger.debug(f"Content preview: {content[:100]}...")
                 
                 if filename in file_line_map:
-                    file_sections[filename] = content
+                    # Find the matching position for this line number
+                    matching_lines = [
+                        (line_num, pos, line_content) 
+                        for line_num, pos, line_content in file_line_map[filename] 
+                        if line_num == line_number
+                    ]
+                    if matching_lines:
+                        # Use the first matching position
+                        _, position, _ = matching_lines[0]
+                        file_sections[f"{filename}:{line_number}"] = {
+                            "path": filename,
+                            "line": line_number,
+                            "position": position,  # Store position separately from line number
+                            "body": content
+                        }
+                        logger.debug(f"Added file section for {filename}:{line_number} at position {position}")
+                    else:
+                        logger.warning(f"No matching position found for {filename}:{line_number}")
+                        # Try to find the closest line number as a fallback
+                        if file_line_map[filename]:
+                            closest_line = min(file_line_map[filename], key=lambda x: abs(x[0] - line_number))
+                            closest_line_num, closest_pos, _ = closest_line
+                            logger.info(f"Using closest line {closest_line_num} at position {closest_pos} as fallback")
+                            file_sections[f"{filename}:{closest_line_num}"] = {
+                                "path": filename,
+                                "line": closest_line_num,
+                                "position": closest_pos,
+                                "body": f"[Originally for line {line_number}] {content}"
+                            }
+                else:
+                    logger.warning(f"File {filename} not found in file_line_map")
+                    # Try to find a similar filename as a fallback
+                    similar_files = [f for f in file_line_map.keys() if filename in f or f in filename]
+                    if similar_files:
+                        similar_file = similar_files[0]
+                        logger.info(f"Using similar file {similar_file} as fallback")
+                        # Use the first line of the similar file
+                        if file_line_map[similar_file]:
+                            first_line = file_line_map[similar_file][0]
+                            line_num, pos, _ = first_line
+                            file_sections[f"{similar_file}:{line_num}"] = {
+                                "path": similar_file,
+                                "line": line_num,
+                                "position": pos,
+                                "body": f"[Originally for {filename}:{line_number}] {content}"
+                            }
             
             # Convert file sections to line comments 
-            additional_comments = []
-            
-            for filename, content in file_sections.items():
-                # Get the line numbers for this file from the diff
-                if not file_line_map.get(filename):
-                    continue
-                    
-                # Get the first changed line in the file
-                first_line = file_line_map[filename][0][0] if file_line_map[filename] else 1
-                
-                # Create a comment for the file
-                additional_comments.append({
-                    "path": filename,
-                    "line": first_line,
-                    "body": f"## File Review\n\n{content}"
-                })
+            additional_comments = list(file_sections.values())
+            logger.debug(f"Added {len(additional_comments)} additional comments from file sections")
             
             # Combine standard and file-section comments
             all_comments = standard_line_comments + additional_comments
@@ -435,11 +614,56 @@ def review_pr(config_path: Optional[str] = None, verbose: bool = False) -> bool:
             if all_comments:
                 logger.info(f"Posting {len(all_comments)} line-specific comments",
                            context={"comments_count": len(all_comments)})
-                line_comment_success = post_line_comments(repo, pr_number, github_token, all_comments)
-                if not line_comment_success:
-                    logger.error("Failed to post line comments",
-                                context={"repo": repo, "pr_number": pr_number})
-                    # Continue despite failure to post line comments
+                try:
+                    # Ensure all comments have the required fields for the GitHub API
+                    for comment in all_comments:
+                        # GitHub requires these fields: path, body, line, side
+                        if "path" not in comment or "body" not in comment:
+                            logger.error(f"Comment missing required fields: {comment}")
+                            continue
+                            
+                        # Ensure line is an integer
+                        if "line" in comment:
+                            comment["line"] = int(comment["line"])
+                        else:
+                            logger.warning(f"Comment missing line number for {comment.get('path', 'unknown file')}")
+                            comment["line"] = 1  # Default to line 1 if no line specified
+                        
+                        # Ensure side is always RIGHT (for new version)
+                        comment["side"] = "RIGHT"
+                        
+                        # For multi-line comments, ensure start_side is set if start_line is present
+                        if "start_line" in comment:
+                            comment["start_line"] = int(comment["start_line"]) 
+                            comment["start_side"] = "RIGHT"
+                    
+                    # Remove any comments that don't have the required fields
+                    valid_comments = [c for c in all_comments if "path" in c and "body" in c and "line" in c and "side" in c]
+                    
+                    if len(valid_comments) < len(all_comments):
+                        logger.warning(f"Filtered out {len(all_comments) - len(valid_comments)} invalid comments")
+                    
+                    # Log sample comments for debugging
+                    if valid_comments:
+                        sample = valid_comments[0]
+                        logger.debug(f"Sample comment: path={sample['path']}, line={sample['line']}, side={sample['side']}")
+                        
+                        # Log number of comments per file
+                        file_counts = {}
+                        for c in valid_comments:
+                            file_counts[c["path"]] = file_counts.get(c["path"], 0) + 1
+                        logger.debug(f"Comments by file: {file_counts}")
+                    
+                    # Post the comments
+                    if valid_comments:
+                        line_comment_success = post_line_comments(repo, pr_number, github_token, valid_comments)
+                        if not line_comment_success:
+                            logger.error("Failed to post line comments - API call returned False",
+                                        context={"repo": repo, "pr_number": pr_number})
+                    else:
+                        logger.warning("No valid comments to post")
+                except Exception as e:
+                    logger.error(f"Exception while posting line comments: {str(e)}", exc_info=True)
             else:
                 logger.info("No line-specific comments found in the review",
                            context={"repo": repo, "pr_number": pr_number})

@@ -7,6 +7,7 @@ import os
 import json
 import requests
 from typing import Dict, Any, Optional
+import logging
 
 
 class ModelAdapter:
@@ -21,9 +22,36 @@ class ModelAdapter:
                    (provider, api_key, endpoint, model, etc.)
         """
         self.provider = config["provider"].lower()
-        api_key = config.get("api_key") or os.environ.get(f"{self.provider.upper()}_API_KEY")
-        # Ensure API key is trimmed of any whitespace
-        self.api_key = api_key.strip() if api_key else None
+        logger = logging.getLogger("ai-pr-reviewer")
+        logger.info(f"Initializing model adapter for provider: {self.provider}")
+        
+        # Special handling for Anthropic to prioritize the environment variable
+        if self.provider == "anthropic":
+            api_key = os.environ.get("ANTHROPIC_API_KEY") or config.get("api_key")
+            if os.environ.get("ANTHROPIC_API_KEY"):
+                logger.info("Using ANTHROPIC_API_KEY from environment variables")
+            else:
+                logger.info("ANTHROPIC_API_KEY not found in environment, using config value")
+        else:
+            api_key = config.get("api_key") or os.environ.get(f"{self.provider.upper()}_API_KEY")
+            
+        # Ensure API key is trimmed of any whitespace and newlines
+        if api_key:
+            # Strip all whitespace, newlines, and control characters
+            api_key = api_key.strip().replace('\n', '').replace('\r', '')
+            logger.debug("Cleaned API key of any whitespace and newline characters")
+            
+        self.api_key = api_key if api_key else None
+        
+        # Log API key presence (not the actual key)
+        if self.api_key:
+            logger.info(f"API key for {self.provider} is present")
+            # Log the first few characters of the key for debugging (safely)
+            if len(self.api_key) > 8:
+                logger.debug(f"API key starts with: {self.api_key[:4]}...{self.api_key[-4:]}")
+        else:
+            logger.error(f"API key for {self.provider} is missing")
+            
         self.endpoint = config["endpoint"]
         self.model = config["model"]
         self.max_tokens = config.get("max_tokens", 1500)
@@ -97,30 +125,149 @@ class ModelAdapter:
 
     def _call_anthropic(self, prompt: str) -> str:
         """Call Anthropic Claude API."""
+        # Get the API key from environment variable directly to ensure it's correct
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            api_key = self.api_key
+        else:
+            # Clean the API key from environment variable
+            api_key = api_key.strip().replace('\n', '').replace('\r', '')
+            
+        logger = logging.getLogger("ai-pr-reviewer")
+        logger.debug(f"Using API key from {'environment variable' if api_key != self.api_key else 'config'}")
+        
+        # Verify the API key is valid
+        if not api_key or len(api_key) < 8:
+            logger.error("API key is missing or invalid")
+            raise RuntimeError("Anthropic API key is missing or invalid")
+            
+        # Log the first few characters of the key for debugging (safely)
+        logger.debug(f"API key starts with: {api_key[:4]}...{api_key[-4:]}")
+        
+        # Use the correct authentication header for Anthropic API
         headers = {
-            "x-api-key": self.api_key,
+            "x-api-key": api_key,
             "Content-Type": "application/json",
             "anthropic-version": "2023-06-01"
         }
         
-        # Updated payload format for Anthropic Claude API
-        payload = {
-            "model": self.model,
-            "max_tokens": self.max_tokens,
-            "messages": [{"role": "user", "content": prompt}]
-        }
+        # Try with the newer Anthropic API format
+        try:
+            # Updated payload format for Anthropic Claude API
+            payload = {
+                "model": self.model,
+                "max_tokens": self.max_tokens,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.5  # Lower temperature for more consistent formatting
+            }
+            
+            response = requests.post(self.endpoint, json=payload, headers=headers)
+            
+            # If we get a 404 error, try with the latest model
+            if response.status_code == 404:
+                logger.warning(f"Model {self.model} not found, trying with claude-3-opus-latest")
+                payload["model"] = "claude-3-opus-latest"
+                response = requests.post(self.endpoint, json=payload, headers=headers)
+            
+            if response.status_code != 200:
+                # Try with updated headers for newer API
+                headers = {
+                    "anthropic-api-key": api_key,
+                    "Content-Type": "application/json",
+                    "anthropic-version": "2023-06-01"
+                }
+                response = requests.post(self.endpoint, json=payload, headers=headers)
+                
+                if response.status_code != 200:
+                    # Try with Authorization header
+                    headers = {
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                        "anthropic-version": "2023-06-01"
+                    }
+                    response = requests.post(self.endpoint, json=payload, headers=headers)
+                    
+                    if response.status_code != 200:
+                        # Log the error for debugging
+                        logger.error(f"Anthropic API error: {response.status_code} - {response.text}")
+                        raise RuntimeError(f"Anthropic API error: {response.status_code} - {response.text}")
+        except Exception as e:
+            raise RuntimeError(f"Anthropic API error: {str(e)}")
         
-        response = requests.post(self.endpoint, json=payload, headers=headers)
-        if response.status_code != 200:
-            raise RuntimeError(f"Anthropic API error: {response.text}")
-        
-        # Handle both old and new API response formats
+        # Handle Claude 3 response format
         response_json = response.json()
-        if "content" in response_json and isinstance(response_json["content"], list):
-            return response_json["content"][0]["text"]
-        elif "content" in response_json and isinstance(response_json["content"], list) and "value" in response_json["content"][0]:
-            return response_json["content"][0]["value"]
-        else:
+        
+        # Use proper logging instead of print
+        logger = logging.getLogger("ai-pr-reviewer")
+        logger.debug(f"Anthropic response keys: {list(response_json.keys())}")
+        
+        # Claude 3 format (messages API)
+        if "content" in response_json:
+            # Extract all text content from the response
+            if isinstance(response_json["content"], list):
+                text_parts = []
+                for item in response_json["content"]:
+                    if isinstance(item, dict):
+                        if item.get("type") == "text" and "text" in item:
+                            text_parts.append(item["text"])
+                        elif "text" in item:
+                            text_parts.append(item["text"])
+                        elif "value" in item:
+                            text_parts.append(item["value"])
+                
+                if text_parts:
+                    result = "\n".join(text_parts)
+                    logger.debug(f"Extracted text from content list: {result[:100]}...")
+                    return result
+        
+        # Try direct content access
+        if "content" in response_json and len(response_json["content"]) > 0:
+            content_item = response_json["content"][0]
+            if isinstance(content_item, dict):
+                if "text" in content_item:
+                    result = content_item["text"]
+                    logger.debug(f"Extracted text from content[0].text: {result[:100]}...")
+                    return result
+                elif "value" in content_item:
+                    result = content_item["value"]
+                    logger.debug(f"Extracted text from content[0].value: {result[:100]}...")
+                    return result
+        
+        # Legacy format
+        if "completion" in response_json:
+            result = response_json["completion"]
+            logger.debug(f"Extracted text from completion: {result[:100]}...")
+            return result
+        
+        # Try to extract from the 'message' field if it exists
+        if "message" in response_json:
+            message = response_json["message"]
+            if isinstance(message, dict) and "content" in message:
+                if isinstance(message["content"], list):
+                    text_parts = []
+                    for item in message["content"]:
+                        if isinstance(item, dict) and "text" in item:
+                            text_parts.append(item["text"])
+                    if text_parts:
+                        result = "\n".join(text_parts)
+                        logger.debug(f"Extracted text from message.content: {result[:100]}...")
+                        return result
+                elif isinstance(message["content"], str):
+                    result = message["content"]
+                    logger.debug(f"Extracted text from message.content string: {result[:100]}...")
+                    return result
+        
+        # Last resort: try to extract any text we can find
+        try:
+            # Log the full response for debugging
+            logger.error(f"Could not extract text using standard methods. Full response: {response_json}")
+            
+            # Try to convert to string as a last resort
+            result = str(response_json)
+            logger.debug(f"Converted full response to string: {result[:100]}...")
+            return result
+        except Exception as e:
+            logger.error(f"Error converting response to string: {str(e)}")
             raise RuntimeError(f"Unexpected Anthropic API response format: {response_json}")
 
     def _call_google(self, prompt: str) -> str:
