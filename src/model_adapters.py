@@ -35,8 +35,13 @@ class ModelAdapter:
         else:
             api_key = config.get("api_key") or os.environ.get(f"{self.provider.upper()}_API_KEY")
             
-        # Ensure API key is trimmed of any whitespace
-        self.api_key = api_key.strip() if api_key else None
+        # Ensure API key is trimmed of any whitespace and newlines
+        if api_key:
+            # Strip all whitespace, newlines, and control characters
+            api_key = api_key.strip().replace('\n', '').replace('\r', '')
+            logger.debug("Cleaned API key of any whitespace and newline characters")
+            
+        self.api_key = api_key if api_key else None
         
         # Log API key presence (not the actual key)
         if self.api_key:
@@ -124,9 +129,20 @@ class ModelAdapter:
         api_key = os.environ.get("ANTHROPIC_API_KEY")
         if not api_key:
             api_key = self.api_key
+        else:
+            # Clean the API key from environment variable
+            api_key = api_key.strip().replace('\n', '').replace('\r', '')
             
         logger = logging.getLogger("ai-pr-reviewer")
         logger.debug(f"Using API key from {'environment variable' if api_key != self.api_key else 'config'}")
+        
+        # Verify the API key is valid
+        if not api_key or len(api_key) < 8:
+            logger.error("API key is missing or invalid")
+            raise RuntimeError("Anthropic API key is missing or invalid")
+            
+        # Log the first few characters of the key for debugging (safely)
+        logger.debug(f"API key starts with: {api_key[:4]}...{api_key[-4:]}")
         
         # Use the correct authentication header for Anthropic API
         headers = {
