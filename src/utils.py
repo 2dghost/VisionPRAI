@@ -367,13 +367,48 @@ def post_line_comments(
         logger.error(f"Failed to get latest commit SHA: {str(e)}")
         return False
     
+    # Get the diff for the PR to calculate positions correctly
+    try:
+        diff_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}"
+        diff_headers = {
+            "Accept": "application/vnd.github.v3.diff",
+            "Authorization": f"Bearer {token}",
+            "X-GitHub-Api-Version": "2022-11-28"
+        }
+        diff_response = requests.get(diff_url, headers=diff_headers)
+        diff_response.raise_for_status()
+        diff_content = diff_response.text
+        
+        # Also get the files modified in this PR
+        files_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/files"
+        files_response = requests.get(files_url, headers=headers)
+        files_response.raise_for_status()
+        files = files_response.json()
+        
+        # Create a map of file paths to their positions in the diff
+        file_positions = {}
+        for file in files:
+            file_positions[file["filename"]] = {
+                "patch": file.get("patch", ""),
+                "changes": file.get("changes", 0),
+                "status": file.get("status", "")
+            }
+            
+        logger.debug(f"Found {len(files)} files in PR: {', '.join(file_positions.keys())}")
+    except Exception as e:
+        logger.error(f"Failed to get diff information: {str(e)}")
+        # Continue without diff position mapping - we'll use line numbers directly
+    
     # Format comments for the API
     formatted_comments = []
     for comment in comments:
+        path = comment["path"]
+        line_num = int(comment.get("line", 1))
+        
         formatted_comment = {
-            "path": comment["path"],
+            "path": path,
             "body": comment["body"],
-            "line": int(comment.get("line", 1)),
+            "line": line_num,
             "side": comment.get("side", "RIGHT")
         }
         
@@ -385,7 +420,6 @@ def post_line_comments(
         formatted_comments.append(formatted_comment)
     
     # Create a review with comments in a single request
-    # This is the recommended way according to GitHub API docs
     try:
         review_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews"
         
@@ -418,6 +452,21 @@ def post_line_comments(
         # Success!
         review_id = review_response.json().get("id")
         logger.info(f"Successfully created review #{review_id} with {len(formatted_comments)} comments")
+        
+        # Verify the review was created correctly by fetching it
+        try:
+            verify_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews/{review_id}"
+            verify_response = requests.get(verify_url, headers=headers)
+            
+            if verify_response.status_code >= 400:
+                logger.warning(f"Could not verify review creation: HTTP {verify_response.status_code}")
+            else:
+                review_data = verify_response.json()
+                comments_count = len(review_data.get("comments", []))
+                logger.info(f"Verified review #{review_id} has {comments_count} comments")
+        except Exception as e:
+            logger.warning(f"Error verifying review: {str(e)}")
+        
         return True
             
     except Exception as e:
@@ -433,33 +482,40 @@ def create_review_with_individual_comments(repo, pr_number, token, comments, com
         "X-GitHub-Api-Version": "2022-11-28"
     }
     
-    # First create a pending review
+    # First create an empty review to add comments to
     try:
         review_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews"
         
-        pending_data = {
+        # Create an empty review - this gives us a review_id to add comments to
+        review_data = {
             "commit_id": commit_sha,
-            "event": "PENDING",
-            "body": "AI PR review in progress..."
+            "event": "PENDING",  # Create a draft review
+            "body": f"AI PR Review - Creating individual comments..."
         }
         
-        pending_response = requests.post(review_url, headers=headers, json=pending_data)
-        pending_response.raise_for_status()
+        logger.info("Creating empty review for individual comments")
         
-        review_id = pending_response.json().get("id")
-        if not review_id:
-            logger.error("Failed to get review ID from pending review response")
+        review_response = requests.post(review_url, headers=headers, json=review_data)
+        
+        if review_response.status_code >= 400:
+            error_body = review_response.text
+            logger.error(f"Failed to create empty review: HTTP {review_response.status_code}: {error_body}")
             return False
             
-        logger.debug(f"Created pending review with ID: {review_id}")
+        review_id = review_response.json().get("id")
+        if not review_id:
+            logger.error("Failed to get review ID from response")
+            return False
+            
+        logger.info(f"Created empty review #{review_id}")
     except Exception as e:
-        logger.error(f"Failed to create pending review: {str(e)}")
+        logger.error(f"Error creating empty review: {str(e)}")
         return False
     
-    # Add comments one by one
+    # Add comments to the review one by one
     comments_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews/{review_id}/comments"
-    
     success = True
+    
     for i, comment in enumerate(comments):
         try:
             # Each comment needs the commit_id
@@ -481,12 +537,13 @@ def create_review_with_individual_comments(repo, pr_number, token, comments, com
             
             if comment_response.status_code >= 400:
                 logger.error(f"Failed to add comment {i+1}: HTTP {comment_response.status_code}: {comment_response.text}")
+                # Don't fail immediately - try to add other comments
                 success = False
             else:
                 logger.debug(f"Successfully added comment {i+1}/{len(comments)}")
                 
             # Add a delay to avoid rate limits
-            time.sleep(0.5)
+            time.sleep(1.0)  # Increased delay to avoid rate limiting
         except Exception as e:
             logger.error(f"Error adding comment {i+1}: {str(e)}")
             success = False
@@ -509,6 +566,21 @@ def create_review_with_individual_comments(repo, pr_number, token, comments, com
             return False
             
         logger.info(f"Successfully submitted review with {len(comments)} comments")
+        
+        # Verify the comments were created correctly
+        try:
+            verify_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews/{review_id}"
+            verify_response = requests.get(verify_url, headers=headers)
+            
+            if verify_response.status_code >= 400:
+                logger.warning(f"Could not verify review: HTTP {verify_response.status_code}")
+            else:
+                review_data = verify_response.json()
+                comments_count = len(review_data.get("comments", []))
+                logger.info(f"Verified review #{review_id} has {comments_count} comments")
+        except Exception as e:
+            logger.warning(f"Error verifying review: {str(e)}")
+        
         return success
     except Exception as e:
         logger.error(f"Failed to submit review: {str(e)}")
